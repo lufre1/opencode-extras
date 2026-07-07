@@ -45,7 +45,8 @@ When you press `Tab` to select `auto` and give it a task, it runs a 5-phase loop
 ## Key Facts
 
 - **API key location**: `~/.local/share/opencode/auth.json` (plaintext, chmod 600)
-- **Model list**: Fetched dynamically from GWDG at each `opencode` invocation
+- **Model list**: Fetched from GWDG, cached 1h in `~/.cache/opencode/saia-gwdg-models.json` (stale cache used if fetch fails)
+- **Rate limits (per key, all endpoints)**: 30 req/min, 200/hour, 1000/day, 3000/month — each agent step is one request; a hung run usually means the bucket is exhausted
 - **Only ready models** are exposed (status check in plugin)
 - Plugin auto-detects model capabilities (attachment support, reasoning)
 - Plugin overrides each agent's model via `ROLE_MODELS` in `saia-gwdg-plugin.js`; `auto` prefers a reasoning-capable model

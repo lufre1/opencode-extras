@@ -20,7 +20,7 @@ bash setup-gwdg.sh    # fresh install: writes config files + auth.json (see warn
 Config resolution flows at every `opencode` startup:
 
 1. `opencode.jsonc` — static config: registers the plugin, defines the `saia-gwdg` provider, and declares agents (`auto`, `coder`, `researcher`, `debugger`). Agent `model` values here are placeholders. Agent system prompts live in `prompts/*.md`, referenced via `"prompt": "{file:./prompts/auto.md}"`, keeping the jsonc slim (config + permissions only).
-2. `saia-gwdg-plugin.js` — plugin's `config` hook runs at startup: reads the API key from `~/.local/share/opencode/auth.json`, fetches the live model list from GWDG, injects only `status === "ready"` models into the provider (auto-detecting attachment/reasoning support), then **overwrites each agent's model** using the `ROLE_MODELS` preference table (first ready preference wins, else any ready model; the `auto` role additionally prefers reasoning-capable models).
+2. `saia-gwdg-plugin.js` — plugin's `config` hook runs at startup: reads the API key from `~/.local/share/opencode/auth.json`, fetches the live model list from GWDG (cached 1h in `~/.cache/opencode/saia-gwdg-models.json`; stale cache is used if the fetch fails), injects only `status === "ready"` models into the provider (auto-detecting attachment/reasoning support), then **overwrites each agent's model** using the `ROLE_MODELS` preference table (first ready preference wins, else any ready model; the `auto` role additionally prefers reasoning-capable models).
 3. `~/.local/share/opencode/auth.json` (chmod 600, outside this repo) — holds the API key under the `saia-gwdg` key. If missing or unreadable, the plugin silently returns and no models load.
 
 Key consequence: **to change which model an agent uses, edit `ROLE_MODELS` in `saia-gwdg-plugin.js`**, not the `model` fields in `opencode.jsonc` — the plugin overrides those at startup.
@@ -34,7 +34,8 @@ Key consequence: **to change which model an agent uses, edit `ROLE_MODELS` in `s
 ## Gotchas
 
 - **`setup-gwdg.sh` clobbers config**: it rewrites `opencode.jsonc` and `saia-gwdg-plugin.js` from embedded heredocs that are older than the live files (no `ROLE_MODELS`, no agent definitions, no `prompts/`). It is for fresh installs only — do not run it on this machine to "refresh" the setup.
-- Plugin failures are silent: missing/invalid `auth.json` or a failed models fetch means an empty model list with no error.
+- **GWDG rate limits are tight and shared across everything**: one per-key bucket of 30 requests/min, 200/hour, 1000/day, 3000/month (see `x-ratelimit-*` response headers) covering chat completions AND `/v1/models`. Every agent step in an auto-mode run is one request, and opencode retries silently on 429 — a hung `opencode run` that returns nothing usually means the bucket is exhausted and retries are burning it further. Kill it rather than letting it spin; check budget with a cheap request and `curl -D -`.
+- Plugin failures are silent: missing/invalid `auth.json` or a failed models fetch with no usable cache means an empty model list with no error.
 - The plugin path in `opencode.jsonc` is relative (`./saia-gwdg-plugin.js`); don't move the plugin file.
 - Agent prompts are loaded at startup via relative `{file:./prompts/*.md}` references — don't move or rename `prompts/` without updating `opencode.jsonc`.
 - `.opencode.bak/` is an old backup of a previous config layout, not live config.

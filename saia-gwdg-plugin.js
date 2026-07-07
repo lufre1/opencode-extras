@@ -1,6 +1,13 @@
-import { readFileSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { join, dirname } from "path";
+
+// SAIA rate limits are a single per-key bucket (30/min, 200/hour, 1000/day,
+// 3000/month) and every /v1/models fetch counts against it. Cache the model
+// list so repeated opencode startups don't burn requests; on fetch failure
+// (offline, 429) fall back to a stale cache instead of loading no models.
+const CACHE_PATH = join(homedir(), ".cache/opencode/saia-gwdg-models.json");
+const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 // Preferred model per agent role, best first. The plugin picks the first entry
 // that SAIA currently reports as `ready`; if none are ready it falls back to any
@@ -26,17 +33,32 @@ export const server = async (_input) => {
 
       if (!key) return;
 
-      let models;
+      let cached;
       try {
-        const resp = await fetch("https://chat-ai.academiccloud.de/v1/models", {
-          headers: { Authorization: `Bearer ${key}` },
-        });
-        if (!resp.ok) return;
-        const json = await resp.json();
-        models = json.data;
-      } catch {
-        return;
+        cached = JSON.parse(readFileSync(CACHE_PATH, "utf-8"));
+      } catch {}
+
+      let models;
+      if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+        models = cached.models;
+      } else {
+        try {
+          const resp = await fetch("https://chat-ai.academiccloud.de/v1/models", {
+            headers: { Authorization: `Bearer ${key}` },
+          });
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          const json = await resp.json();
+          models = json.data;
+          try {
+            mkdirSync(dirname(CACHE_PATH), { recursive: true });
+            writeFileSync(CACHE_PATH, JSON.stringify({ fetchedAt: Date.now(), models }));
+          } catch {}
+        } catch {
+          models = cached?.models; // stale cache beats no models
+        }
       }
+
+      if (!models) return;
 
       if (!config.provider) config.provider = {};
       if (!config.provider["saia-gwdg"]) {
