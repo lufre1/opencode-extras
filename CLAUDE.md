@@ -12,7 +12,7 @@ This is the user's `~/.config/opencode` directory, tracked in git. It configures
 opencode              # start session (verifies config loads)
 opencode models       # list models fetched from GWDG — confirms plugin + API key work
 opencode providers    # show provider status
-bash setup-gwdg.sh    # fresh install: writes config files + auth.json (see warning below)
+./build-installer.sh  # regenerate install-auto-mode.sh after config/plugin/prompt changes
 ```
 
 ## Architecture
@@ -33,7 +33,7 @@ Key consequence: **to change which model an agent uses, edit `ROLE_MODELS` in `s
 
 ## Gotchas
 
-- **`setup-gwdg.sh` clobbers config**: it rewrites `opencode.jsonc` and `saia-gwdg-plugin.js` from embedded heredocs that are older than the live files (no `ROLE_MODELS`, no agent definitions, no `prompts/`). It is for fresh installs only — do not run it on this machine to "refresh" the setup.
+- **`install-auto-mode.sh` is generated** by `build-installer.sh` from the live config files — never edit it directly, and regenerate + commit it after changing `opencode.jsonc`, `saia-gwdg-plugin.js`, or `prompts/*` (a stale installer silently ships old config to other devices). Don't run the installer on this machine to "refresh" the setup — the repo is the source of truth.
 - **GWDG rate limits are tight and shared across everything**: one per-key bucket of 30 requests/min, 200/hour, 1000/day, 3000/month (see `x-ratelimit-*` response headers) covering chat completions AND `/v1/models`. Every agent step in an auto-mode run is one request, and opencode retries silently on 429 — a hung `opencode run` that returns nothing usually means the bucket is exhausted and retries are burning it further. Kill it rather than letting it spin; check budget with a cheap request and `curl -D -`.
 - Plugin failures are silent: missing/invalid `auth.json` or a failed models fetch with no usable cache means an empty model list with no error.
 - The plugin path in `opencode.jsonc` is relative (`./saia-gwdg-plugin.js`); don't move the plugin file.

@@ -12,7 +12,8 @@ This directory configures the `opencode` AI assistant to use the GWDG SAIA OpenA
 | `saia-gwdg-plugin.js` | Fetches live model list from GWDG at startup |
 | `prompts/` | Agent system prompts, referenced via `{file:./prompts/*.md}` from opencode.jsonc |
 | `auth.json` (in `~/.local/share/opencode/`) | Stores API key (chmod 600) |
-| `setup-gwdg.sh` | One-click setup script (fresh installs only; does not reflect live config) |
+| `build-installer.sh` | Packs the live config into `install-auto-mode.sh` — rerun after config changes |
+| `install-auto-mode.sh` | Generated self-contained installer for other devices (never edit directly) |
 
 ## Agents
 
@@ -58,12 +59,12 @@ When you press `Tab` to select `auto` and give it a task, it runs a 5-phase loop
 opencode              # start session with default (build) agent
 opencode models       # list all available GWDG models
 opencode providers    # show provider status
-setup-gwdg.sh         # run setup (prompts for API key or uses GWDG_API_KEY env)
+./build-installer.sh  # regenerate install-auto-mode.sh after config changes
 ```
 
 ## Common Mistakes
 
-- Editing `opencode.jsonc` instead of running `setup-gwdg.sh` → key won't load
-- Moving `saia-gwdg-plugin.js` → absolute paths in config will break
-- Deleting `auth.json` → plugin silently fails, no models loaded
-- Running opencode before fetching models completes → empty model list
+- Editing `install-auto-mode.sh` directly → it is generated; changes are lost on the next `./build-installer.sh`
+- Changing `opencode.jsonc`/plugin/`prompts/` without rerunning `./build-installer.sh` → installer drifts from the live config
+- Moving `saia-gwdg-plugin.js` or `prompts/` → relative paths in `opencode.jsonc` will break
+- Deleting `auth.json` → plugin silently fails, no models loaded (a stale model cache in `~/.cache/opencode/` may mask this for up to 1h)

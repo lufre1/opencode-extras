@@ -1,142 +1,55 @@
-# OpenCode GWDG Setup
+# Installing auto mode on another device
 
-## Prerequisites
+Everything ships in one generated script: `install-auto-mode.sh`.
 
-- [opencode](https://github.com/sst/opencode) installed and available in your PATH
-
-That's it. No Node.js, npm, or dependencies to install.
-
-## Quick Install
-
-Run the setup script:
+## Fresh device
 
 ```bash
-bash setup-gwdg.sh
+scp install-auto-mode.sh otherhost:
+ssh otherhost
+GWDG_API_KEY="your-key" bash install-auto-mode.sh    # or run without the env var to be prompted
 ```
 
-If your environment provides an API key via env var, it will be used automatically:
+What it does:
+
+1. Checks for `opencode` (also looks in `~/.opencode/bin`); if missing, offers to run the official installer (`curl -fsSL https://opencode.ai/install | bash`).
+2. Writes `opencode.jsonc`, `saia-gwdg-plugin.js`, and `prompts/*.md` into `~/.config/opencode/`. Files that would be overwritten are backed up to `~/.config/opencode.bak-<timestamp>/` first; unchanged files are left alone (rerunning is safe).
+3. Writes the API key to `~/.local/share/opencode/auth.json` (chmod 600) as `{"saia-gwdg": {"type": "api", "key": "..."}}`, merging into an existing auth.json rather than clobbering other providers. An existing saia-gwdg key is kept unless `--force-key` is passed.
+4. Verifies by running `opencode models` and checking that `saia-gwdg/` models are listed (costs 1 request of the shared GWDG rate budget: 30/min, 200/hour per key).
+
+Flags: `--yes`/`-y` auto-accepts prompts (needed for non-interactive use together with `GWDG_API_KEY`), `--force-key` replaces an existing key, `--help` shows usage.
+
+## Maintaining the installer (on this machine)
+
+`install-auto-mode.sh` is **generated** — never edit it directly. After changing `opencode.jsonc`, `saia-gwdg-plugin.js`, or `prompts/*.md`:
 
 ```bash
-GWDG_API_KEY="your-key" bash setup-gwdg.sh
+./build-installer.sh    # regenerates install-auto-mode.sh from the live files
+git add -A && git commit
 ```
 
-## Manual Install
+The generator refuses to run if a packed file contains the heredoc delimiter or lacks a trailing newline, and stamps the output with the source git commit and pack date (the stamp identifies the config content; the commit *containing* the installer is one later). It warns if the packed files have uncommitted changes (`-dirty` stamp).
 
-You only need 3 files.
-
-### 1. `~/.config/opencode/opencode.jsonc`
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["./saia-gwdg-plugin.js"],
-  "provider": {
-    "saia-gwdg": {
-      "npm": "@ai-sdk/openai-compatible",
-      "options": {
-        "baseURL": "https://chat-ai.academiccloud.de/v1"
-      }
-    }
-  }
-}
-```
-
-### 2. `~/.config/opencode/saia-gwdg-plugin.js`
-
-This plugin reads your API key, dynamically fetches available models from GWDG,
-and injects them into the provider config:
-
-```js
-import { readFileSync } from "fs";
-import { homedir } from "os";
-import { join } from "path";
-
-export const server = async (_input) => {
-  return {
-    config: async (config) => {
-      let key;
-      try {
-        const authPath = join(homedir(), ".local/share/opencode/auth.json");
-        const auth = JSON.parse(readFileSync(authPath, "utf-8"));
-        key = auth["saia-gwdg"]?.key;
-      } catch {
-        return;
-      }
-
-      if (!key) return;
-
-      let models;
-      try {
-        const resp = await fetch("https://chat-ai.academiccloud.de/v1/models", {
-          headers: { Authorization: `Bearer ${key}` },
-        });
-        if (!resp.ok) return;
-        const json = await resp.json();
-        models = json.data;
-      } catch {
-        return;
-      }
-
-      if (!config.provider) config.provider = {};
-      if (!config.provider["saia-gwdg"]) {
-        config.provider["saia-gwdg"] = {
-          npm: "@ai-sdk/openai-compatible",
-          options: { baseURL: "https://chat-ai.academiccloud.de/v1" },
-        };
-      }
-
-      config.provider["saia-gwdg"].models = {};
-      for (const m of models) {
-        if (m.status !== "ready") continue;
-        config.provider["saia-gwdg"].models[m.id] = {
-          name: m.name,
-          attachment: m.input?.some((t) => ["image", "audio", "video"].includes(t)),
-          reasoning: m.output?.includes("thought"),
-        };
-      }
-    },
-  };
-};
-```
-
-### 3. `~/.local/share/opencode/auth.json`
-
-```bash
-mkdir -p ~/.local/share/opencode
-
-cat > ~/.local/share/opencode/auth.json << EOF
-{
-  "saia-gwdg": {
-    "key": "your-gwdg-api-key-here"
-  }
-}
-EOF
-chmod 600 ~/.local/share/opencode/auth.json
-```
-
-> ⚠️ Your API key is stored in plaintext. Ensure the machine is secure.
-
-## Architecture
+## Architecture on the target device
 
 ```
-auth.json (API key, chmod 600)
+auth.json (API key, chmod 600, ~/.local/share/opencode/)
     │
     ▼
-saia-gwdg-plugin.js (reads key, fetches models at startup)
+saia-gwdg-plugin.js (reads key, fetches models — cached 1h — assigns agent models)
     │
     ▼
-opencode.jsonc (provider config + dynamic model list)
+opencode.jsonc (provider + agents; prompts via {file:./prompts/*.md})
     │
     ▼
 https://chat-ai.academiccloud.de/v1  (GWDG OpenAI-compatible API)
 ```
 
-## Usage
+## Usage after install
 
 ```bash
-opencode                        # interactive session
-opencode models                 # list all available GWDG models
-opencode providers              # view provider status
+opencode              # interactive session; Tab until the 'auto' agent is selected
+opencode models       # list available GWDG models
 ```
 
-The plugin fetches the available model list each time opencode starts.
+Subagents: `@coder`, `@researcher`, `@debugger`.
