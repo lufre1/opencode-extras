@@ -2,6 +2,16 @@ import { readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
+// Preferred model per agent role, best first. The plugin picks the first entry
+// that SAIA currently reports as `ready`; if none are ready it falls back to any
+// available model so auto mode keeps working. Edit THIS to change auto-mode models.
+const ROLE_MODELS = {
+  auto:       ["qwen3.5-122b-a10b", "qwen3-coder-next"],
+  coder:      ["qwen3-coder-next", "devstral-2-123b-instruct-2512"],
+  researcher: ["qwen3.5-122b-a10b", "qwen3-coder-next"],
+  debugger:   ["devstral-2-123b-instruct-2512", "qwen3-coder-next"],
+};
+
 export const server = async (_input) => {
   return {
     config: async (config) => {
@@ -44,6 +54,29 @@ export const server = async (_input) => {
           attachment: m.input?.some((t) => ["image", "audio", "video"].includes(t)),
           reasoning: m.output?.includes("thought"),
         };
+      }
+
+      // Resolve each agent's model from ROLE_MODELS against the live list:
+      // first preference that is ready wins, otherwise any ready model.
+      const ready = new Set(Object.keys(config.provider["saia-gwdg"].models));
+      const anyReady = [...ready][0];
+
+      if (config.agent) {
+        const providerModels = config.provider["saia-gwdg"].models;
+        for (const [role, prefs] of Object.entries(ROLE_MODELS)) {
+          const agent = config.agent[role];
+          if (!agent) continue;
+          let pick = prefs.find((id) => ready.has(id));
+          if (role === "auto") {
+            // the orchestrator benefits from thinking before delegating
+            pick =
+              prefs.find((id) => ready.has(id) && providerModels[id]?.reasoning) ??
+              pick ??
+              [...ready].find((id) => providerModels[id]?.reasoning);
+          }
+          pick = pick ?? anyReady;
+          if (pick) agent.model = `saia-gwdg/${pick}`;
+        }
       }
     },
   };
