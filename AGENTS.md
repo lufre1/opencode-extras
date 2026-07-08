@@ -21,10 +21,10 @@ This directory configures the `opencode` AI assistant to use the GWDG SAIA OpenA
 |-------|------|-----------------------------|------|-------|-------------|--------|
 | `build` | Primary | global/model | default | - | Full | built-in |
 | `plan` | Primary | global/model | default | - | Ask (edit/bash) | built-in |
-| `auto` | Primary | qwen3.5-122b-a10b (prefers reasoning-capable) | 0.2 | 40 | Read-only (read/glob/grep/list) + task | `prompts/auto.md` |
-| `coder` | Subagent | qwen3-coder-next | 0.2 | 50 | Full | `prompts/coder.md` |
-| `researcher` | Subagent | qwen3.5-122b-a10b | 0.2 | 25 | Read-only | `prompts/researcher.md` |
-| `debugger` | Subagent | devstral-2-123b | 0.1 | 30 | Full | `prompts/debugger.md` |
+| `auto` | Primary | qwen3.5-122b-a10b (prefers reasoning-capable) | 0.2 | 30 | Read-only (read/glob/grep/list) + task | `prompts/auto.md` |
+| `coder` | Subagent | qwen3-coder-next | 0.2 | 30 | Full | `prompts/coder.md` |
+| `researcher` | Subagent | qwen3.5-122b-a10b | 0.2 | 15 | Read-only | `prompts/researcher.md` |
+| `debugger` | Subagent | devstral-2-123b | 0.1 | 20 | Full | `prompts/debugger.md` |
 
 ### Usage
 
