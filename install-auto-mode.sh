@@ -2,7 +2,7 @@
 #
 # install-auto-mode.sh — GENERATED FILE, DO NOT EDIT.
 # Regenerate with: ./build-installer.sh  (in the opencode config repo)
-# Source: opencode-config commit 28ee109, packed 2026-07-07T08:03:43Z
+# Source: opencode-config commit a15b56c, packed 2026-07-09T08:26:58Z
 #
 # Installs the GWDG SAIA auto-mode setup for opencode: provider + plugin,
 # agents (auto, coder, researcher, debugger) with their prompts, and the
@@ -129,7 +129,7 @@ write_file opencode.jsonc <<'__OC_FILE_EOF__'
       "mode": "primary",
       "model": "saia-gwdg/qwen3.5-122b-a10b",
       "temperature": 0.2,
-      "steps": 30,
+      "steps": 12,
       "prompt": "{file:./prompts/auto.md}",
       "permission": {
         "read": "allow",
@@ -151,7 +151,7 @@ write_file opencode.jsonc <<'__OC_FILE_EOF__'
       "mode": "subagent",
       "model": "saia-gwdg/qwen3-coder-next",
       "temperature": 0.2,
-      "steps": 30,
+      "steps": 20,
       "prompt": "{file:./prompts/coder.md}",
       "permission": {
         "edit": "allow",
@@ -164,7 +164,7 @@ write_file opencode.jsonc <<'__OC_FILE_EOF__'
       "mode": "subagent",
       "model": "saia-gwdg/qwen3.5-122b-a10b",
       "temperature": 0.2,
-      "steps": 15,
+      "steps": 8,
       "prompt": "{file:./prompts/researcher.md}",
       "permission": {
         "edit": "deny",
@@ -177,7 +177,7 @@ write_file opencode.jsonc <<'__OC_FILE_EOF__'
       "mode": "subagent",
       "model": "saia-gwdg/devstral-2-123b-instruct-2512",
       "temperature": 0.1,
-      "steps": 20,
+      "steps": 12,
       "prompt": "{file:./prompts/debugger.md}",
       "permission": {
         "edit": "allow",
@@ -190,7 +190,7 @@ write_file opencode.jsonc <<'__OC_FILE_EOF__'
 __OC_FILE_EOF__
 
 write_file saia-gwdg-plugin.js <<'__OC_FILE_EOF__'
-import { readFileSync, writeFileSync, mkdirSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync, appendFileSync } from "fs";
 import { homedir } from "os";
 import { join, dirname } from "path";
 
@@ -199,7 +199,102 @@ import { join, dirname } from "path";
 // list so repeated opencode startups don't burn requests; on fetch failure
 // (offline, 429) fall back to a stale cache instead of loading no models.
 const CACHE_PATH = join(homedir(), ".cache/opencode/saia-gwdg-models.json");
-const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+// ---------------------------------------------------------------------------
+// Request pacer: wraps globalThis.fetch for chat-ai.academiccloud.de only.
+// - spaces request starts >= 2100ms apart so the 30/min limit can't trip
+// - stops with a clear error when the hour/day bucket is nearly empty,
+//   instead of letting opencode retry-spin 429s into a drained bucket
+// - on 429, waits for the advertised reset once and retries; a second 429
+//   throws
+// Patching global fetch (not provider options.fetch) because opencode may
+// not pass function-valued config through to the SDK.
+// ---------------------------------------------------------------------------
+const SAIA_HOST = "chat-ai.academiccloud.de";
+const MIN_INTERVAL_MS = 2100;
+const HOUR_FLOOR = 5;
+const DAY_FLOOR = 10;
+const PACER_LOG = join(homedir(), ".cache/opencode/saia-gwdg-pacer.log");
+
+function installPacer() {
+  if (globalThis.__saiaPacerInstalled) return;
+  globalThis.__saiaPacerInstalled = true;
+
+  const realFetch = globalThis.fetch.bind(globalThis);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  let queue = Promise.resolve(); // serializes SAIA requests
+  let lastStart = 0;
+  let remaining = { minute: null, hour: null, day: null };
+
+  const readBuckets = (resp) => {
+    for (const b of ["minute", "hour", "day"]) {
+      const v = resp.headers.get(`x-ratelimit-remaining-${b}`);
+      if (v !== null) remaining[b] = Number(v);
+    }
+  };
+
+  const debugLog = (line) => {
+    if (process.env.SAIA_PACER_DEBUG !== "1") return;
+    try {
+      mkdirSync(dirname(PACER_LOG), { recursive: true });
+      appendFileSync(PACER_LOG, `${new Date().toISOString()} ${line}\n`);
+    } catch {}
+  };
+
+  globalThis.fetch = (input, init) => {
+    let url;
+    try {
+      url = new URL(typeof input === "string" ? input : input.url ?? String(input));
+    } catch {
+      return realFetch(input, init);
+    }
+    if (url.hostname !== SAIA_HOST) return realFetch(input, init);
+
+    const run = queue.then(async () => {
+      if (remaining.hour !== null && remaining.hour <= HOUR_FLOOR) {
+        throw new Error(
+          `SAIA hourly budget nearly exhausted (${remaining.hour} requests left this hour) — ` +
+            `aborting instead of retry-spinning. Wait for the hour to reset.`
+        );
+      }
+      if (remaining.day !== null && remaining.day <= DAY_FLOOR) {
+        throw new Error(
+          `SAIA daily budget nearly exhausted (${remaining.day} requests left today) — aborting.`
+        );
+      }
+
+      const wait = lastStart + MIN_INTERVAL_MS - Date.now();
+      if (wait > 0) await sleep(wait);
+      lastStart = Date.now();
+
+      let resp = await realFetch(input, init);
+      readBuckets(resp);
+      if (resp.status === 429) {
+        const reset = Number(resp.headers.get("ratelimit-reset")) || 60;
+        debugLog(`429 ${url.pathname} — waiting ${Math.min(reset, 65)}s before one retry`);
+        await sleep(Math.min(reset, 65) * 1000);
+        lastStart = Date.now();
+        resp = await realFetch(input, init);
+        readBuckets(resp);
+        if (resp.status === 429) {
+          throw new Error(
+            `SAIA rate limit still exceeded after waiting (remaining: ` +
+              `${remaining.minute}/min, ${remaining.hour}/hour, ${remaining.day}/day) — aborting.`
+          );
+        }
+      }
+      debugLog(
+        `${resp.status} ${url.pathname} remaining=${remaining.minute}/min ${remaining.hour}/hour ${remaining.day}/day`
+      );
+      return resp;
+    });
+
+    // keep the chain alive even when a request fails
+    queue = run.catch(() => {});
+    return run;
+  };
+}
 
 // Preferred model per agent role, best first. The plugin picks the first entry
 // that SAIA currently reports as `ready`; if none are ready it falls back to any
@@ -214,6 +309,8 @@ const ROLE_MODELS = {
 export const server = async (_input) => {
   return {
     config: async (config) => {
+      installPacer();
+
       let key;
       try {
         const authPath = join(homedir(), ".local/share/opencode/auth.json");
@@ -317,8 +414,14 @@ it (which project, which area of the code). Do not analyze deeply — that is th
 researcher's job.
 
 ### Phase 1 — Plan (before ANY coding)
-Task @researcher to analyze the request and produce a PLAN block (template
-below). Then AUDIT the plan yourself:
+FAST PATH: if the task touches at most ONE file AND the change is fully
+specified by the user's request (no analysis needed to know what to write),
+author the PLAN block yourself instead of tasking @researcher. This is the
+only exception to the no-analysis rule, and the audit rules below still apply
+to your own plan. When in doubt, use @researcher.
+
+Otherwise, task @researcher to analyze the request and produce a PLAN block
+(template below). Then AUDIT the plan yourself:
 
 - Every file listed under FILES TO CHANGE must exist (verify with glob/read)
   unless it is marked NEW.
@@ -339,13 +442,13 @@ Task @debugger with the PLAN's acceptance criteria plus the coder's CHANGES
 block. Require a VERDICT block back (template below). The debugger must have
 RUN every criterion and quoted real output.
 
-### Phase 4 — Fix loop (max 3 rounds)
-If VERDICT is FAIL:
-1. Increment the round counter and state it explicitly ("Fix round 2 of 3").
+### Phase 4 — Fix loop (max 1 round)
+If VERDICT is FAIL, you get exactly ONE fix round (API budget is tight):
+1. State it explicitly ("Fix round 1 of 1").
 2. Re-task @coder with the debugger's FAILURES section quoted verbatim:
    "Fix exactly these failures: ..."
 3. Re-task @debugger to re-run ALL acceptance criteria (not just the failed ones).
-4. Repeat until VERDICT: PASS or 3 rounds are exhausted.
+4. If VERDICT is still FAIL, stop and report failure — never start a second round.
 
 ### Phase 5 — Report
 Summarize for the user: what was planned, what was changed, and the validation

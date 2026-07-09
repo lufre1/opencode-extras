@@ -21,10 +21,10 @@ This directory configures the `opencode` AI assistant to use the GWDG SAIA OpenA
 |-------|------|-----------------------------|------|-------|-------------|--------|
 | `build` | Primary | global/model | default | - | Full | built-in |
 | `plan` | Primary | global/model | default | - | Ask (edit/bash) | built-in |
-| `auto` | Primary | qwen3.5-122b-a10b (prefers reasoning-capable) | 0.2 | 30 | Read-only (read/glob/grep/list) + task | `prompts/auto.md` |
-| `coder` | Subagent | qwen3-coder-next | 0.2 | 30 | Full | `prompts/coder.md` |
-| `researcher` | Subagent | qwen3.5-122b-a10b | 0.2 | 15 | Read-only | `prompts/researcher.md` |
-| `debugger` | Subagent | devstral-2-123b | 0.1 | 20 | Full | `prompts/debugger.md` |
+| `auto` | Primary | qwen3.5-122b-a10b (prefers reasoning-capable) | 0.2 | 12 | Read-only (read/glob/grep/list) + task | `prompts/auto.md` |
+| `coder` | Subagent | qwen3-coder-next | 0.2 | 20 | Full | `prompts/coder.md` |
+| `researcher` | Subagent | qwen3.5-122b-a10b | 0.2 | 8 | Read-only | `prompts/researcher.md` |
+| `debugger` | Subagent | devstral-2-123b | 0.1 | 12 | Full | `prompts/debugger.md` |
 
 ### Usage
 
@@ -36,18 +36,19 @@ This directory configures the `opencode` AI assistant to use the GWDG SAIA OpenA
 When you press `Tab` to select `auto` and give it a task, it runs a 5-phase loop:
 
 1. **Intake** — auto scopes the task (it has read/glob/grep access for scoping and auditing only)
-2. **Plan** — `@researcher` produces a PLAN block (goal, files, steps, runnable acceptance criteria); auto audits it (files exist, criteria are executable) before any coding
+2. **Plan** — `@researcher` produces a PLAN block (goal, files, steps, runnable acceptance criteria); auto audits it (files exist, criteria are executable) before any coding. Fast path: for one-file, fully-specified tasks auto authors the PLAN itself and skips the researcher
 3. **Implement** — `@coder` executes the audited PLAN, returns a CHANGES block with self-check results
 4. **Validate** — `@debugger` actually RUNS every acceptance criterion and returns VERDICT: PASS/FAIL with quoted command output
-5. **Fix loop** — on FAIL, auto re-tasks coder with the failures verbatim and re-validates, max 3 rounds; then it must report failure honestly
+5. **Fix loop** — on FAIL, auto re-tasks coder with the failures verbatim and re-validates, max 1 round; then it must report failure honestly
 
 **Auto mode cannot edit, write, or run bash** — it delegates all work. It may declare success only when the debugger returned `VERDICT: PASS` with real command output for every criterion; otherwise it reports the remaining failures verbatim.
 
 ## Key Facts
 
 - **API key location**: `~/.local/share/opencode/auth.json` (plaintext, chmod 600)
-- **Model list**: Fetched from GWDG, cached 1h in `~/.cache/opencode/saia-gwdg-models.json` (stale cache used if fetch fails)
+- **Model list**: Fetched from GWDG, cached 24h in `~/.cache/opencode/saia-gwdg-models.json` (stale cache used if fetch fails)
 - **Rate limits (per key, all endpoints)**: 30 req/min, 200/hour, 1000/day, 3000/month — each agent step is one request; a hung run usually means the bucket is exhausted
+- **Request pacer**: the plugin wraps `fetch` for the SAIA host — spaces requests ≥2.1s apart (can't trip 30/min), retries a 429 once after the advertised reset, and aborts with a clear error when ≤5 hourly / ≤10 daily requests remain. Set `SAIA_PACER_DEBUG=1` to log each request to `~/.cache/opencode/saia-gwdg-pacer.log`
 - **Only ready models** are exposed (status check in plugin)
 - Plugin auto-detects model capabilities (attachment support, reasoning)
 - Plugin overrides each agent's model via `ROLE_MODELS` in `saia-gwdg-plugin.js`; `auto` prefers a reasoning-capable model
@@ -67,4 +68,4 @@ opencode providers    # show provider status
 - Editing `install-auto-mode.sh` directly → it is generated; changes are lost on the next `./build-installer.sh`
 - Changing `opencode.jsonc`/plugin/`prompts/` without rerunning `./build-installer.sh` → installer drifts from the live config
 - Moving `saia-gwdg-plugin.js` or `prompts/` → relative paths in `opencode.jsonc` will break
-- Deleting `auth.json` → plugin silently fails, no models loaded (a stale model cache in `~/.cache/opencode/` may mask this for up to 1h)
+- Deleting `auth.json` → plugin silently fails, no models loaded (a stale model cache in `~/.cache/opencode/` may mask this for up to 24h)

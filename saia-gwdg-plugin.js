@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync, appendFileSync } from "fs";
 import { homedir } from "os";
 import { join, dirname } from "path";
 
@@ -7,7 +7,102 @@ import { join, dirname } from "path";
 // list so repeated opencode startups don't burn requests; on fetch failure
 // (offline, 429) fall back to a stale cache instead of loading no models.
 const CACHE_PATH = join(homedir(), ".cache/opencode/saia-gwdg-models.json");
-const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+// ---------------------------------------------------------------------------
+// Request pacer: wraps globalThis.fetch for chat-ai.academiccloud.de only.
+// - spaces request starts >= 2100ms apart so the 30/min limit can't trip
+// - stops with a clear error when the hour/day bucket is nearly empty,
+//   instead of letting opencode retry-spin 429s into a drained bucket
+// - on 429, waits for the advertised reset once and retries; a second 429
+//   throws
+// Patching global fetch (not provider options.fetch) because opencode may
+// not pass function-valued config through to the SDK.
+// ---------------------------------------------------------------------------
+const SAIA_HOST = "chat-ai.academiccloud.de";
+const MIN_INTERVAL_MS = 2100;
+const HOUR_FLOOR = 5;
+const DAY_FLOOR = 10;
+const PACER_LOG = join(homedir(), ".cache/opencode/saia-gwdg-pacer.log");
+
+function installPacer() {
+  if (globalThis.__saiaPacerInstalled) return;
+  globalThis.__saiaPacerInstalled = true;
+
+  const realFetch = globalThis.fetch.bind(globalThis);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  let queue = Promise.resolve(); // serializes SAIA requests
+  let lastStart = 0;
+  let remaining = { minute: null, hour: null, day: null };
+
+  const readBuckets = (resp) => {
+    for (const b of ["minute", "hour", "day"]) {
+      const v = resp.headers.get(`x-ratelimit-remaining-${b}`);
+      if (v !== null) remaining[b] = Number(v);
+    }
+  };
+
+  const debugLog = (line) => {
+    if (process.env.SAIA_PACER_DEBUG !== "1") return;
+    try {
+      mkdirSync(dirname(PACER_LOG), { recursive: true });
+      appendFileSync(PACER_LOG, `${new Date().toISOString()} ${line}\n`);
+    } catch {}
+  };
+
+  globalThis.fetch = (input, init) => {
+    let url;
+    try {
+      url = new URL(typeof input === "string" ? input : input.url ?? String(input));
+    } catch {
+      return realFetch(input, init);
+    }
+    if (url.hostname !== SAIA_HOST) return realFetch(input, init);
+
+    const run = queue.then(async () => {
+      if (remaining.hour !== null && remaining.hour <= HOUR_FLOOR) {
+        throw new Error(
+          `SAIA hourly budget nearly exhausted (${remaining.hour} requests left this hour) — ` +
+            `aborting instead of retry-spinning. Wait for the hour to reset.`
+        );
+      }
+      if (remaining.day !== null && remaining.day <= DAY_FLOOR) {
+        throw new Error(
+          `SAIA daily budget nearly exhausted (${remaining.day} requests left today) — aborting.`
+        );
+      }
+
+      const wait = lastStart + MIN_INTERVAL_MS - Date.now();
+      if (wait > 0) await sleep(wait);
+      lastStart = Date.now();
+
+      let resp = await realFetch(input, init);
+      readBuckets(resp);
+      if (resp.status === 429) {
+        const reset = Number(resp.headers.get("ratelimit-reset")) || 60;
+        debugLog(`429 ${url.pathname} — waiting ${Math.min(reset, 65)}s before one retry`);
+        await sleep(Math.min(reset, 65) * 1000);
+        lastStart = Date.now();
+        resp = await realFetch(input, init);
+        readBuckets(resp);
+        if (resp.status === 429) {
+          throw new Error(
+            `SAIA rate limit still exceeded after waiting (remaining: ` +
+              `${remaining.minute}/min, ${remaining.hour}/hour, ${remaining.day}/day) — aborting.`
+          );
+        }
+      }
+      debugLog(
+        `${resp.status} ${url.pathname} remaining=${remaining.minute}/min ${remaining.hour}/hour ${remaining.day}/day`
+      );
+      return resp;
+    });
+
+    // keep the chain alive even when a request fails
+    queue = run.catch(() => {});
+    return run;
+  };
+}
 
 // Preferred model per agent role, best first. The plugin picks the first entry
 // that SAIA currently reports as `ready`; if none are ready it falls back to any
@@ -22,6 +117,8 @@ const ROLE_MODELS = {
 export const server = async (_input) => {
   return {
     config: async (config) => {
+      installPacer();
+
       let key;
       try {
         const authPath = join(homedir(), ".local/share/opencode/auth.json");

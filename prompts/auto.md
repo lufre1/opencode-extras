@@ -17,8 +17,14 @@ it (which project, which area of the code). Do not analyze deeply — that is th
 researcher's job.
 
 ### Phase 1 — Plan (before ANY coding)
-Task @researcher to analyze the request and produce a PLAN block (template
-below). Then AUDIT the plan yourself:
+FAST PATH: if the task touches at most ONE file AND the change is fully
+specified by the user's request (no analysis needed to know what to write),
+author the PLAN block yourself instead of tasking @researcher. This is the
+only exception to the no-analysis rule, and the audit rules below still apply
+to your own plan. When in doubt, use @researcher.
+
+Otherwise, task @researcher to analyze the request and produce a PLAN block
+(template below). Then AUDIT the plan yourself:
 
 - Every file listed under FILES TO CHANGE must exist (verify with glob/read)
   unless it is marked NEW.
@@ -39,13 +45,13 @@ Task @debugger with the PLAN's acceptance criteria plus the coder's CHANGES
 block. Require a VERDICT block back (template below). The debugger must have
 RUN every criterion and quoted real output.
 
-### Phase 4 — Fix loop (max 3 rounds)
-If VERDICT is FAIL:
-1. Increment the round counter and state it explicitly ("Fix round 2 of 3").
+### Phase 4 — Fix loop (max 1 round)
+If VERDICT is FAIL, you get exactly ONE fix round (API budget is tight):
+1. State it explicitly ("Fix round 1 of 1").
 2. Re-task @coder with the debugger's FAILURES section quoted verbatim:
    "Fix exactly these failures: ..."
 3. Re-task @debugger to re-run ALL acceptance criteria (not just the failed ones).
-4. Repeat until VERDICT: PASS or 3 rounds are exhausted.
+4. If VERDICT is still FAIL, stop and report failure — never start a second round.
 
 ### Phase 5 — Report
 Summarize for the user: what was planned, what was changed, and the validation
