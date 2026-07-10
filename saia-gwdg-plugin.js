@@ -108,9 +108,10 @@ function installPacer() {
 // available model so auto mode keeps working. Edit THIS to change auto-mode models.
 const ROLE_MODELS = {
   auto:       ["deepseek-v4-flash", "qwen3.5-122b-a10b", "qwen3-coder-next"],
+  "auto-quick": ["deepseek-v4-flash", "meta-llama-3.1-8b-instruct"],
   coder:      ["qwen3-coder-next", "devstral-2-123b-instruct-2512"],
   researcher: ["qwen3.5-122b-a10b", "qwen3-coder-next"],
-  debugger:   ["devstral-2-123b-instruct-2512", "qwen3-coder-next"],
+  debugger:   ["qwen3.5-122b-a10b", "devstral-2-123b-instruct-2512"],
 };
 
 export const server = async (_input) => {

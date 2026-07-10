@@ -24,19 +24,20 @@ This directory configures the `opencode` AI assistant to use the GWDG SAIA OpenA
 | `auto` | Primary | deepseek-v4-flash | 0.2 | 12 | Read-only (read/glob/grep/list) + task | `prompts/auto.md` |
 | `coder` | Subagent | qwen3-coder-next | 0.2 | 20 | Full | `prompts/coder.md` |
 | `researcher` | Subagent | qwen3.5-122b-a10b | 0.2 | 8 | Read-only | `prompts/researcher.md` |
-| `debugger` | Subagent | devstral-2-123b | 0.1 | 12 | Full | `prompts/debugger.md` |
+| `debugger` | Subagent | qwen3.5-122b-a10b | 0.1 | 12 | Full | `prompts/debugger.md` |
+| `auto-quick` | Subagent | deepseek-v4-flash | 0.2 | 6 | Full | inline |
 
 ### Usage
 
 - **Primary agents** (`build`, `plan`, `auto`): Press `Tab` to switch
-- **Subagents** (`coder`, `researcher`, `debugger`): Invoke with `@coder`, `@researcher`, or `@debugger` in your message
+- **Subagents** (`coder`, `researcher`, `debugger`, `auto-quick`): Invoke with `@coder`, `@researcher`, `@debugger`, or `@auto-quick` in your message
 
 ### Auto Mode Workflow
 
 When you press `Tab` to select `auto` and give it a task, it runs a 5-phase loop:
 
 1. **Intake** — auto scopes the task (it has read/glob/grep access for scoping and auditing only)
-2. **Plan** — `@researcher` produces a PLAN block (goal, files, steps, runnable acceptance criteria); auto audits it (files exist, criteria are executable) before any coding. Fast path: for one-file, fully-specified tasks auto authors the PLAN itself and skips the researcher
+2. **Plan** — `@researcher` produces a PLAN block (goal, files, steps, runnable acceptance criteria); auto audits it (files exist, criteria are executable) before any coding. **Fast path:** for one-file, fully-specified tasks auto skips research and tasks `@auto-quick` directly
 3. **Implement** — `@coder` executes the audited PLAN, returns a CHANGES block with self-check results
 4. **Validate** — `@debugger` actually RUNS every acceptance criterion and returns VERDICT: PASS/FAIL with quoted command output
 5. **Fix loop** — on FAIL, auto re-tasks coder with the failures verbatim and re-validates, max 1 round; then it must report failure honestly

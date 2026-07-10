@@ -14,7 +14,7 @@
       "color": "warning"
     },
     "auto": {
-      "description": "Orchestrator: plan → implement → validate loop (max 3 fix rounds)",
+      "description": "Orchestrator: plan → implement → validate loop (max 1 fix round)",
       "mode": "primary",
       "model": "saia-gwdg/deepseek-v4-flash",
       "temperature": 0.2,
@@ -29,6 +29,7 @@
         "bash": "deny",
         "write": "deny",
         "task": {
+          "auto-quick": "allow",
           "researcher": "allow",
           "coder": "allow",
           "debugger": "allow"
@@ -61,10 +62,23 @@
         "write": "deny"
       }
     },
+    "auto-quick": {
+      "description": "Fast path for trivial tasks (typos, single-file changes): implements directly without researcher phase",
+      "mode": "subagent",
+      "model": "saia-gwdg/deepseek-v4-flash",
+      "temperature": 0.2,
+      "steps": 6,
+      "prompt": "You implement single-file, fully-specified tasks quickly. No research phase needed.\n\nYou MUST output a CHANGES block and you MUST self-check (run one command):\n\n```\n## CHANGES\nSTATUS: COMPLETE | BLOCKED\nFILES TOUCHED:\n- <path> — <summary>\nSELF-CHECK: <command run and result>\n```",
+      "permission": {
+        "edit": "allow",
+        "bash": "allow",
+        "write": "allow"
+      }
+    },
     "debugger": {
       "description": "Validator: runs acceptance criteria, returns VERDICT PASS/FAIL with quoted output",
       "mode": "subagent",
-      "model": "saia-gwdg/devstral-2-123b-instruct-2512",
+      "model": "saia-gwdg/qwen3.5-122b-a10b",
       "temperature": 0.1,
       "steps": 12,
       "prompt": "{file:./prompts/debugger.md}",
