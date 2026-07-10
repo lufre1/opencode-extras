@@ -46,7 +46,7 @@ When you press `Tab` to select `auto` and give it a task, it runs a 5-phase loop
 ## Key Facts
 
 - **API key location**: `~/.local/share/opencode/auth.json` (plaintext, chmod 600)
-- **Model list**: Fetched from GWDG, cached 24h in `~/.cache/opencode/saia-gwdg-models.json` (stale cache used if fetch fails)
+- **Model list**: Fetched fresh from GWDG at every launch; `~/.cache/opencode/saia-gwdg-models.json` is written on each successful fetch and used only as a fallback if the fetch fails
 - **Rate limits (per key, all endpoints)**: 30 req/min, 200/hour, 1000/day, 3000/month — each agent step is one request; a hung run usually means the bucket is exhausted
 - **Request pacer**: the plugin wraps `fetch` for the SAIA host — spaces requests ≥2.1s apart (can't trip 30/min), retries a 429 once after the advertised reset, and aborts with a clear error when ≤5 hourly / ≤10 daily requests remain. Set `SAIA_PACER_DEBUG=1` to log each request to `~/.cache/opencode/saia-gwdg-pacer.log`
 - **Only ready models** are exposed (status check in plugin)
@@ -68,4 +68,5 @@ opencode providers    # show provider status
 - Editing `install-auto-mode.sh` directly → it is generated; changes are lost on the next `./build-installer.sh`
 - Changing `opencode.jsonc`/plugin/`prompts/` without rerunning `./build-installer.sh` → installer drifts from the live config
 - Moving `saia-gwdg-plugin.js` or `prompts/` → relative paths in `opencode.jsonc` will break
-- Deleting `auth.json` → plugin silently fails, no models loaded (a stale model cache in `~/.cache/opencode/` may mask this for up to 24h)
+- Deleting `auth.json` → plugin silently fails, no models loaded
+- A broken models fetch (offline, exhausted budget) is masked silently: the plugin falls back to the last cached list in `~/.cache/opencode/saia-gwdg-models.json`, however old it is
