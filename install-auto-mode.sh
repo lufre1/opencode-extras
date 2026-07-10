@@ -2,7 +2,7 @@
 #
 # install-auto-mode.sh — GENERATED FILE, DO NOT EDIT.
 # Regenerate with: ./build-installer.sh  (in the opencode config repo)
-# Source: opencode-config commit c7cb52f-dirty, packed 2026-07-10T09:59:02Z
+# Source: opencode-config commit a70d1ca-dirty, packed 2026-07-10T11:19:00Z
 #
 # Installs the GWDG SAIA auto-mode setup for opencode: provider + plugin,
 # agents (auto, coder, researcher, debugger) with their prompts, and the
@@ -127,7 +127,7 @@ write_file opencode.jsonc <<'__OC_FILE_EOF__'
     "auto": {
       "description": "Orchestrator: plan → implement → validate loop (max 3 fix rounds)",
       "mode": "primary",
-      "model": "saia-gwdg/qwen3.5-122b-a10b",
+      "model": "saia-gwdg/deepseek-v4-flash",
       "temperature": 0.2,
       "steps": 12,
       "prompt": "{file:./prompts/auto.md}",
@@ -373,13 +373,7 @@ export const server = async (_input) => {
           const agent = config.agent[role];
           if (!agent) continue;
           let pick = prefs.find((id) => ready.has(id));
-          if (role === "auto") {
-            // the orchestrator benefits from thinking before delegating
-            pick =
-              prefs.find((id) => ready.has(id) && providerModels[id]?.reasoning) ??
-              pick ??
-              [...ready].find((id) => providerModels[id]?.reasoning);
-          }
+
           pick = pick ?? anyReady;
           if (pick) agent.model = `saia-gwdg/${pick}`;
         }

@@ -181,13 +181,7 @@ export const server = async (_input) => {
           const agent = config.agent[role];
           if (!agent) continue;
           let pick = prefs.find((id) => ready.has(id));
-          if (role === "auto") {
-            // the orchestrator benefits from thinking before delegating
-            pick =
-              prefs.find((id) => ready.has(id) && providerModels[id]?.reasoning) ??
-              pick ??
-              [...ready].find((id) => providerModels[id]?.reasoning);
-          }
+
           pick = pick ?? anyReady;
           if (pick) agent.model = `saia-gwdg/${pick}`;
         }

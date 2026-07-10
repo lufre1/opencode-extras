@@ -21,7 +21,7 @@ This directory configures the `opencode` AI assistant to use the GWDG SAIA OpenA
 |-------|------|-----------------------------|------|-------|-------------|--------|
 | `build` | Primary | global/model | default | - | Full | built-in |
 | `plan` | Primary | global/model | default | - | Ask (edit/bash) | built-in |
-| `auto` | Primary | qwen3.5-122b-a10b (prefers reasoning-capable) | 0.2 | 12 | Read-only (read/glob/grep/list) + task | `prompts/auto.md` |
+| `auto` | Primary | deepseek-v4-flash | 0.2 | 12 | Read-only (read/glob/grep/list) + task | `prompts/auto.md` |
 | `coder` | Subagent | qwen3-coder-next | 0.2 | 20 | Full | `prompts/coder.md` |
 | `researcher` | Subagent | qwen3.5-122b-a10b | 0.2 | 8 | Read-only | `prompts/researcher.md` |
 | `debugger` | Subagent | devstral-2-123b | 0.1 | 12 | Full | `prompts/debugger.md` |
@@ -51,7 +51,7 @@ When you press `Tab` to select `auto` and give it a task, it runs a 5-phase loop
 - **Request pacer**: the plugin wraps `fetch` for the SAIA host — spaces requests ≥2.1s apart (can't trip 30/min), retries a 429 once after the advertised reset, and aborts with a clear error when ≤5 hourly / ≤10 daily requests remain. Set `SAIA_PACER_DEBUG=1` to log each request to `~/.cache/opencode/saia-gwdg-pacer.log`
 - **Only ready models** are exposed (status check in plugin)
 - Plugin auto-detects model capabilities (attachment support, reasoning)
-- Plugin overrides each agent's model via `ROLE_MODELS` in `saia-gwdg-plugin.js`; `auto` prefers a reasoning-capable model
+- Plugin overrides each agent's model via `ROLE_MODELS` in `saia-gwdg-plugin.js`
 - Built-in agents (`build`, `plan`) remain available alongside custom agents
 
 ## Commands

@@ -16,7 +16,7 @@
     "auto": {
       "description": "Orchestrator: plan → implement → validate loop (max 3 fix rounds)",
       "mode": "primary",
-      "model": "saia-gwdg/qwen3.5-122b-a10b",
+      "model": "saia-gwdg/deepseek-v4-flash",
       "temperature": 0.2,
       "steps": 12,
       "prompt": "{file:./prompts/auto.md}",
