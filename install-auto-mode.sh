@@ -2,7 +2,7 @@
 #
 # install-auto-mode.sh — GENERATED FILE, DO NOT EDIT.
 # Regenerate with: ./build-installer.sh  (in the opencode config repo)
-# Source: opencode-config commit 1e9489a, packed 2026-07-10T09:38:06Z
+# Source: opencode-config commit c7cb52f-dirty, packed 2026-07-10T09:59:02Z
 #
 # Installs the GWDG SAIA auto-mode setup for opencode: provider + plugin,
 # agents (auto, coder, researcher, debugger) with their prompts, and the
@@ -299,7 +299,7 @@ function installPacer() {
 // that SAIA currently reports as `ready`; if none are ready it falls back to any
 // available model so auto mode keeps working. Edit THIS to change auto-mode models.
 const ROLE_MODELS = {
-  auto:       ["qwen3.5-122b-a10b", "qwen3-coder-next"],
+  auto:       ["deepseek-v4-flash", "qwen3.5-122b-a10b", "qwen3-coder-next"],
   coder:      ["qwen3-coder-next", "devstral-2-123b-instruct-2512"],
   researcher: ["qwen3.5-122b-a10b", "qwen3-coder-next"],
   debugger:   ["devstral-2-123b-instruct-2512", "qwen3-coder-next"],

@@ -107,7 +107,7 @@ function installPacer() {
 // that SAIA currently reports as `ready`; if none are ready it falls back to any
 // available model so auto mode keeps working. Edit THIS to change auto-mode models.
 const ROLE_MODELS = {
-  auto:       ["qwen3.5-122b-a10b", "qwen3-coder-next"],
+  auto:       ["deepseek-v4-flash", "qwen3.5-122b-a10b", "qwen3-coder-next"],
   coder:      ["qwen3-coder-next", "devstral-2-123b-instruct-2512"],
   researcher: ["qwen3.5-122b-a10b", "qwen3-coder-next"],
   debugger:   ["devstral-2-123b-instruct-2512", "qwen3-coder-next"],
