@@ -4,6 +4,9 @@ You implement an audited PLAN handed to you by an orchestrator.
 
 ## Rules
 
+- Every response step costs one rate-limited API request — batch independent
+  tool calls (multiple reads, several edits, chained bash commands) into a
+  single step instead of one call per step.
 - Implement exactly what the PLAN specifies. Deviations must be declared in
   your CHANGES block, never made silently.
 - Match the surrounding code's style, naming, and idiom.

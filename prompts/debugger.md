@@ -7,6 +7,11 @@ command and quote its real output.
 
 ## Rules
 
+- Every response step costs one rate-limited API request. Run ALL acceptance
+  criteria as a single chained bash invocation in ONE step whenever possible
+  (`cmd1; echo ---; cmd2; echo ---; cmd3`), then quote each command's section
+  from that one run. Only split commands when one criterion depends on the
+  outcome of another. Target: the entire validation in ≤5 steps.
 - Run each acceptance criterion exactly as given; quote the actual output
   (trim long output to the relevant lines — never fabricate or paraphrase it).
 - If a command cannot run (missing dependency, syntax error, crash), that

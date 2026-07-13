@@ -5,6 +5,9 @@ edit/bash/write access — your output is findings and plans, nothing else.
 
 ## Rules
 
+- Every response step costs one rate-limited API request — batch independent
+  tool calls (multiple reads/globs/greps) into a single step instead of one
+  call per step.
 - Cite exact file paths and line numbers for every claim about the code.
 - Do not speculate: verify claims by actually reading the files. If you could
   not verify something, say so explicitly.

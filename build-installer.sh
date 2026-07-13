@@ -14,10 +14,12 @@ OUT="install-auto-mode.sh"
 MANIFEST=(
   opencode.jsonc
   saia-gwdg-plugin.js
+  reload-models.sh
   prompts/auto.md
   prompts/coder.md
   prompts/debugger.md
   prompts/researcher.md
+  prompts/solo.md
 )
 
 # ── Sanity checks ────────────────────────────────────────────────────
@@ -53,8 +55,9 @@ cat >"$TMP_OUT" <<OC_GEN_HEADER
 # Source: opencode-config commit $COMMIT$DIRTY, packed $STAMP
 #
 # Installs the GWDG SAIA auto-mode setup for opencode: provider + plugin,
-# agents (auto, coder, researcher, debugger) with their prompts, and the
-# API key in ~/.local/share/opencode/auth.json.
+# agents (solo, auto, coder, coder2, researcher, debugger) with their
+# prompts, the /reload_models helper script, and the API key in
+# ~/.local/share/opencode/auth.json.
 #
 # Usage: [GWDG_API_KEY=...] bash install-auto-mode.sh [--yes] [--force-key]
 #
@@ -242,8 +245,10 @@ verify() {
       log "Previous files were backed up to $BACKUP_DIR"
     fi
     log ""
-    log "Next steps: run 'opencode', press Tab until the 'auto' agent is selected,"
-    log "and give it a task. Subagents: @coder, @researcher, @debugger."
+    log "Next steps: run 'opencode', press Tab until the 'solo' agent (default"
+    log "workhorse) or 'auto' (orchestrator for big tasks) is selected, and give"
+    log "it a task. Subagents: @coder, @coder2, @researcher, @debugger."
+    log "Force-refresh the weekly model cache with /reload_models."
   else
     {
       echo "FAILED: no saia-gwdg models listed."
@@ -256,6 +261,7 @@ verify() {
   fi
 }
 
+chmod 755 "$CONFIG_DIR/reload-models.sh"
 setup_auth_key
 verify
 OC_GEN_FOOTER
