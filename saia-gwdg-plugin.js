@@ -272,6 +272,12 @@ const ROLE_MODELS = {
   // stalling the whole chain — a "ready"-but-hanging model is worse than none.
   researcher: ["qwen3.5-122b-a10b", "qwen3-coder-next"],
   coder:      ["qwen3-coder-next", "glm-4.7"],
+  // Native plan->build workflow: the strongest benchmark result (spreadsheet
+  // 33/34 at 36 requests, 2026-07-14) was plan+build fully on deepseek —
+  // best implementer, poor orchestrator (rule-following), so it lives here
+  // and NOT in solo/auto. solo stays on qwen: 2-3x cheaper per task.
+  plan:       ["deepseek-v4-flash", "qwen3.5-122b-a10b"],
+  build:      ["deepseek-v4-flash", "qwen3-coder-next"],
   // Fix rounds run on a DIFFERENT model family to break correlated errors.
   coder2:     ["glm-4.7", "mistral-medium-3.5-128b"],
   debugger:   ["qwen3-coder-next", "openai-gpt-oss-120b"],

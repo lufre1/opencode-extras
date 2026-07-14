@@ -23,6 +23,9 @@
     "plan": {
       "color": "warning"
     },
+    // Stub so the plugin's ROLE_MODELS can pin the built-in build agent's
+    // model (the plugin skips roles absent from config.agent).
+    "build": {},
     "solo": {
       "description": "Default workhorse: plans, implements, self-checks in one session, then independent @debugger validation (~5-12 requests/task)",
       "mode": "primary",
