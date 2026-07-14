@@ -2,7 +2,7 @@
 #
 # install-auto-mode.sh — GENERATED FILE, DO NOT EDIT.
 # Regenerate with: ./build-installer.sh  (in the opencode config repo)
-# Source: opencode-config commit 1185c87-dirty, packed 2026-07-14T13:04:56Z
+# Source: opencode-config commit 33460b4, packed 2026-07-14T13:05:11Z
 #
 # Installs the GWDG SAIA auto-mode setup for opencode: provider + plugin,
 # agents (solo, auto, coder, coder2, researcher, debugger) with their
