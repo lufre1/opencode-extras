@@ -148,8 +148,10 @@ const ROLE_MODELS = {
   // Orchestrator: best rule-following per request; deepseek-v4-flash demoted
   // (ignores prompt rules under task pressure — verified 2026-07-13).
   auto:       ["qwen3.5-122b-a10b", "qwen3.5-397b-a17b", "deepseek-v4-flash"],
-  // Planning is the highest-leverage request in the chain: deepest reasoning.
-  researcher: ["qwen3.5-397b-a17b", "qwen3.5-122b-a10b"],
+  // Planning is the highest-leverage request in the chain. qwen3.5-397b was
+  // removed entirely: its endpoint hung on 3 of 4 dispatches (2026-07-13/14),
+  // stalling the whole chain — a "ready"-but-hanging model is worse than none.
+  researcher: ["qwen3.5-122b-a10b", "qwen3-coder-next"],
   coder:      ["qwen3-coder-next", "glm-4.7"],
   // Fix rounds run on a DIFFERENT model family to break correlated errors.
   coder2:     ["glm-4.7", "mistral-medium-3.5-128b"],
