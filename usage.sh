@@ -21,9 +21,10 @@ from pathlib import Path
 BUDGET_PATH = Path.home() / ".cache/opencode/saia-gwdg-budget.json"
 DB_PATH = Path.home() / ".local/share/opencode/opencode.db"
 
-# Bucket limits and LOW thresholds mirror saia-gwdg-plugin.js.
+# Bucket limits, LOW thresholds and reset TTLs mirror saia-gwdg-plugin.js.
 LIMITS = {"minute": 30, "hour": 200, "day": 1000, "month": 3000}
 LOW_THRESHOLDS = {"hour": 40, "day": 50, "month": 60}
+RESET_TTL_MIN = {"hour": 60, "day": 24 * 60, "month": 30 * 24 * 60}
 
 
 def human(n):
@@ -34,26 +35,59 @@ def human(n):
 
 
 def budget_section():
-    print("SAIA request budget (remaining/limit)")
+    print("SAIA request budget (remaining/limit, per key)")
     try:
         snap = json.loads(BUDGET_PATH.read_text())
-        remaining = snap["remaining"]
-        updated = datetime.fromisoformat(snap["updatedAt"].replace("Z", "+00:00"))
-    except (OSError, ValueError, KeyError):
+    except (OSError, ValueError):
         print("  no budget snapshot yet — it appears after the first SAIA request")
         return
-    print("  " + "   ".join(
-        f"{bucket}: {remaining.get(bucket, '?')}/{limit}"
-        for bucket, limit in LIMITS.items()))
-    low = [b for b, threshold in LOW_THRESHOLDS.items()
-           if isinstance(remaining.get(b), (int, float)) and remaining[b] < threshold]
+    entries = snap.get("keys")
+    if not isinstance(entries, list) or not entries:  # pre-multi-key snapshot format
+        entries = [{"label": "key1", "updatedAt": snap.get("updatedAt"),
+                    "remaining": snap.get("remaining")}]
+    active = snap.get("activeIndex", 0)
+    now = datetime.now(timezone.utc)
+    # Aggregate mirrors the plugin's freshBudget(): a key without fresh data
+    # counts as full (its buckets have likely reset since last seen).
+    totals = dict.fromkeys(LOW_THRESHOLDS, 0)
+    width = max(len(e.get("label") or f"key{i + 1}") for i, e in enumerate(entries))
+    for i, e in enumerate(entries):
+        remaining = e.get("remaining") or {}
+        try:
+            updated = datetime.fromisoformat(e["updatedAt"].replace("Z", "+00:00"))
+            age_min = (now - updated).total_seconds() / 60
+        except (TypeError, AttributeError, ValueError, KeyError):
+            age_min = None
+        fresh = age_min is not None and age_min < 90
+        exhausted = e.get("exhausted") or {}
+        for b in totals:
+            # a bucket the pacer stamped exhausted counts as empty until its
+            # reset TTL passes (the pacer nulls the count when stamping)
+            stamp = exhausted.get(b)
+            if isinstance(stamp, (int, float)) and stamp > 0 and \
+                    (now.timestamp() - stamp / 1000) / 60 < RESET_TTL_MIN[b]:
+                continue
+            v = remaining.get(b)
+            totals[b] += v if fresh and isinstance(v, (int, float)) else LIMITS[b]
+        counts = "   ".join(
+            f"{bucket}: {remaining.get(bucket) if remaining.get(bucket) is not None else '?'}/{limit}"
+            for bucket, limit in LIMITS.items())
+        mark = " *" if i == active and len(entries) > 1 else "  "
+        if age_min is None:
+            age = "no data yet"
+        elif fresh:
+            age = f"as of {age_min:.0f} min ago"
+        else:
+            age = f"STALE, {age_min / 60:.1f} h old — likely reset since"
+        print(f"  {e.get('label') or f'key{i + 1}':<{width}}{mark} {counts}   ({age})")
+    low = [b for b, threshold in LOW_THRESHOLDS.items() if totals[b] < threshold]
     status = ("LOW (" + ", ".join(f"{b} < {LOW_THRESHOLDS[b]}" for b in low) + ")"
               if low else "HEALTHY")
-    age_min = (datetime.now(timezone.utc) - updated).total_seconds() / 60
-    freshness = (f"as of {age_min:.0f} min ago"
-                 if age_min < 90
-                 else f"STALE, {age_min / 60:.1f} h old — buckets have likely reset since")
-    print(f"  status: {status}   snapshot: {freshness} (updates on every request)")
+    if len(entries) > 1:
+        print("  total: " + "   ".join(
+            f"{b}: ~{int(totals[b])}/{LIMITS[b] * len(entries)}" for b in LOW_THRESHOLDS)
+            + "   (* = active key; stale keys counted as full)")
+    print(f"  status: {status}   (snapshot updates on every request)")
 
 
 def collect(db, since_ms):

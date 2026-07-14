@@ -15,10 +15,17 @@ const MODELS_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 // ---------------------------------------------------------------------------
 // Request pacer: wraps globalThis.fetch for chat-ai.academiccloud.de only.
 // - spaces request starts >= 2100ms apart so the 30/min limit can't trip
-// - stops with a clear error when the hour/day bucket is nearly empty,
-//   instead of letting opencode retry-spin 429s into a drained bucket
+// - supports multiple API keys with hard-floor failover: rate limits are
+//   per key, and opencode only knows the auth.json key, so the pacer
+//   rewrites the Authorization header to the active key on every request.
+//   When the active key's hour/day/month bucket is nearly empty (or it
+//   429s despite pacing) the pacer switches to the next usable key; an
+//   exhausted key re-enters rotation after its bucket's reset TTL. Extra
+//   keys live in KEYS_PATH; without that file this is single-key as before.
+// - stops with a clear error only when EVERY key is nearly exhausted,
+//   instead of letting opencode retry-spin 429s into drained buckets
 // - on 429, waits for the advertised reset once and retries; a second 429
-//   throws
+//   fails the key over; a 429 on the next key too throws
 // - aborts after 3 consecutive 5xx responses: SAIA outages return 500s that
 //   STILL consume the request budget, and opencode retries them with backoff
 //   indefinitely — an unattended run would burn the bucket against a dead API
@@ -33,6 +40,10 @@ const MONTH_FLOOR = 30;
 const MAX_CONSECUTIVE_5XX = 3;
 const PACER_LOG = join(homedir(), ".cache/opencode/saia-gwdg-pacer.log");
 const BUDGET_PATH = join(homedir(), ".cache/opencode/saia-gwdg-budget.json");
+const KEYS_PATH = join(homedir(), ".local/share/opencode/saia-gwdg-keys.json");
+// How long an exhausted bucket keeps a key out of rotation before it is
+// optimistically retried (the true state is learned from the next headers).
+const RESET_TTL_MS = { hour: 60 * 60000, day: 24 * 3600000, month: 30 * 86400000 };
 
 // Debug trail for everything the plugin decides (requests, cache hits,
 // prompt injection). Only active with SAIA_PACER_DEBUG=1.
@@ -44,7 +55,10 @@ const pacerDebugLog = (line) => {
   } catch {}
 };
 
-function installPacer() {
+function installPacer(keys) {
+  // The wrapper closure reads this global, so a config-hook re-run can
+  // refresh the key list without re-wrapping fetch.
+  globalThis.__saiaKeys = keys;
   if (globalThis.__saiaPacerInstalled) return;
   globalThis.__saiaPacerInstalled = true;
 
@@ -52,23 +66,130 @@ function installPacer() {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let queue = Promise.resolve(); // serializes SAIA requests
   let lastStart = 0;
-  let remaining = { minute: null, hour: null, day: null, month: null };
-  let consecutive5xx = 0;
+  let consecutive5xx = 0; // global: an outage is key-independent
+  let activeIndex = 0;
 
-  const readBuckets = (resp) => {
+  const FLOORS = { hour: HOUR_FLOOR, day: DAY_FLOOR, month: MONTH_FLOOR };
+
+  // Per-key pacer state, keyed by the key string so a refreshed key list
+  // keeps what was already learned.
+  const stateByKey = new Map();
+  const stateFor = (key) => {
+    let s = stateByKey.get(key);
+    if (!s) {
+      s = {
+        remaining: { minute: null, hour: null, day: null, month: null },
+        exhausted: { hour: 0, day: 0, month: 0 },
+        updatedAt: null,
+      };
+      stateByKey.set(key, s);
+    }
+    return s;
+  };
+
+  const label = (key) => `key${globalThis.__saiaKeys.indexOf(key) + 1}(…${key.slice(-4)})`;
+
+  const markExhausted = (key, bucket) => {
+    const s = stateFor(key);
+    s.exhausted[bucket] = Date.now();
+    s.remaining[bucket] = null; // forget the count; retry optimistically after the TTL
+    pacerDebugLog(`${label(key)} exhausted (${bucket} bucket)`);
+  };
+
+  // Converts floored remaining counts into exhaustion stamps, then reports
+  // whether the key is currently usable.
+  const keyUsable = (key) => {
+    const s = stateFor(key);
+    let usable = true;
+    for (const b of ["hour", "day", "month"]) {
+      if (s.remaining[b] !== null && s.remaining[b] <= FLOORS[b]) markExhausted(key, b);
+      if (s.exhausted[b]) {
+        if (Date.now() - s.exhausted[b] < RESET_TTL_MS[b]) usable = false;
+        else s.exhausted[b] = 0; // TTL passed — the bucket has reset
+      }
+    }
+    return usable;
+  };
+
+  // The active key while it has budget, else the next usable key (wrapping
+  // around). Returns null when every key is exhausted.
+  const pickKey = () => {
+    const all = globalThis.__saiaKeys ?? [];
+    if (all.length === 0) return null;
+    if (activeIndex >= all.length) activeIndex = 0;
+    const before = activeIndex;
+    for (let i = 0; i < all.length; i++) {
+      const idx = (before + i) % all.length;
+      if (keyUsable(all[idx])) {
+        if (idx !== before) pacerDebugLog(`switching ${label(all[before])} -> ${label(all[idx])}`);
+        activeIndex = idx;
+        return all[idx];
+      }
+    }
+    return null;
+  };
+
+  const allExhaustedError = () => {
+    const all = globalThis.__saiaKeys;
+    const per = all.map((k) => {
+      const s = stateFor(k);
+      const buckets = ["hour", "day", "month"].filter(
+        (b) => s.exhausted[b] && Date.now() - s.exhausted[b] < RESET_TTL_MS[b]
+      );
+      return `${label(k)}: ${buckets.join("+") || "exhausted"}`;
+    });
+    return new Error(
+      `All ${all.length} SAIA key(s) nearly exhausted (${per.join("; ")}) — ` +
+        `aborting instead of retry-spinning. Wait for the buckets to reset.`
+    );
+  };
+
+  // Rate limits are per key, but opencode only knows the auth.json key —
+  // rewrite the Authorization header to the currently active one.
+  // NOTE: when both a Request object and an init are passed, init.headers
+  // wins in fetch() — so the rewrite must always land on the init side
+  // (rewriting only the Request would silently keep the old key).
+  const withAuth = (input, init, key) => {
+    const base =
+      init?.headers ?? (typeof Request !== "undefined" && input instanceof Request ? input.headers : undefined);
+    const headers = new Headers(base);
+    headers.set("authorization", `Bearer ${key}`);
+    return [input, { ...init, headers }];
+  };
+
+  const writeSnapshot = () => {
+    const all = globalThis.__saiaKeys;
+    try {
+      mkdirSync(dirname(BUDGET_PATH), { recursive: true });
+      writeFileSync(
+        BUDGET_PATH,
+        JSON.stringify({
+          updatedAt: new Date().toISOString(),
+          activeIndex,
+          // top-level `remaining` mirrors the active key for old readers
+          remaining: stateFor(all[activeIndex]).remaining,
+          keys: all.map((k) => {
+            const s = stateFor(k);
+            return { label: label(k), updatedAt: s.updatedAt, remaining: s.remaining, exhausted: s.exhausted };
+          }),
+        })
+      );
+    } catch {}
+  };
+
+  const readBuckets = (resp, key) => {
+    const s = stateFor(key);
     let headerPresent = false;
     for (const b of ["minute", "hour", "day", "month"]) {
       const v = resp.headers.get(`x-ratelimit-remaining-${b}`);
       if (v !== null) {
-        remaining[b] = Number(v);
+        s.remaining[b] = Number(v);
         headerPresent = true;
       }
     }
     if (headerPresent) {
-      try {
-        mkdirSync(dirname(BUDGET_PATH), { recursive: true });
-        writeFileSync(BUDGET_PATH, JSON.stringify({ updatedAt: new Date().toISOString(), remaining }));
-      } catch {}
+      s.updatedAt = new Date().toISOString();
+      writeSnapshot();
     }
   };
 
@@ -82,53 +203,51 @@ function installPacer() {
     if (url.hostname !== SAIA_HOST) return realFetch(input, init);
 
     const run = queue.then(async () => {
-      if (remaining.hour !== null && remaining.hour <= HOUR_FLOOR) {
-        throw new Error(
-          `SAIA hourly budget nearly exhausted (${remaining.hour} requests left this hour) — ` +
-            `aborting instead of retry-spinning. Wait for the hour to reset.`
-        );
-      }
-      if (remaining.day !== null && remaining.day <= DAY_FLOOR) {
-        throw new Error(
-          `SAIA daily budget nearly exhausted (${remaining.day} requests left today) — aborting.`
-        );
-      }
-      if (remaining.month !== null && remaining.month <= MONTH_FLOOR) {
-        throw new Error(
-          `SAIA monthly budget nearly exhausted (${remaining.month} requests left this month) — aborting.`
-        );
-      }
       if (consecutive5xx >= MAX_CONSECUTIVE_5XX) {
         throw new Error(
           `SAIA returned ${consecutive5xx} consecutive server errors (5xx) — the service ` +
             `looks down; aborting instead of retry-burning the request budget. Try again later.`
         );
       }
+      let key = pickKey();
+      if (key === null) throw allExhaustedError();
 
-      const wait = lastStart + MIN_INTERVAL_MS - Date.now();
-      if (wait > 0) await sleep(wait);
-      lastStart = Date.now();
+      const attempt = async (k) => {
+        const wait = lastStart + MIN_INTERVAL_MS - Date.now();
+        if (wait > 0) await sleep(wait);
+        lastStart = Date.now();
+        const resp = await realFetch(...withAuth(input, init, k));
+        readBuckets(resp, k);
+        consecutive5xx = resp.status >= 500 ? consecutive5xx + 1 : 0;
+        return resp;
+      };
 
-      let resp = await realFetch(input, init);
-      readBuckets(resp);
-      consecutive5xx = resp.status >= 500 ? consecutive5xx + 1 : 0;
+      let resp = await attempt(key);
       if (resp.status === 429) {
         const reset = Number(resp.headers.get("ratelimit-reset")) || 60;
-        pacerDebugLog(`429 ${url.pathname} — waiting ${Math.min(reset, 65)}s before one retry`);
+        pacerDebugLog(`429 ${url.pathname} on ${label(key)} — waiting ${Math.min(reset, 65)}s before one retry`);
         await sleep(Math.min(reset, 65) * 1000);
-        lastStart = Date.now();
-        resp = await realFetch(input, init);
-        readBuckets(resp);
-        consecutive5xx = resp.status >= 500 ? consecutive5xx + 1 : 0;
+        resp = await attempt(key);
         if (resp.status === 429) {
-          throw new Error(
-            `SAIA rate limit still exceeded after waiting (remaining: ` +
-              `${remaining.minute}/min, ${remaining.hour}/hour, ${remaining.day}/day) — aborting.`
-          );
+          // out of budget despite pacing — fail this key over, try the next once
+          markExhausted(key, "hour");
+          writeSnapshot();
+          key = pickKey();
+          if (key === null) throw allExhaustedError();
+          pacerDebugLog(`429 twice — retrying once on ${label(key)}`);
+          resp = await attempt(key);
+          if (resp.status === 429) {
+            const s = stateFor(key);
+            throw new Error(
+              `SAIA rate limit still exceeded after waiting and switching keys (remaining on ${label(key)}: ` +
+                `${s.remaining.minute}/min, ${s.remaining.hour}/hour, ${s.remaining.day}/day) — aborting.`
+            );
+          }
         }
       }
+      const s = stateFor(key);
       pacerDebugLog(
-        `${resp.status} ${url.pathname} remaining=${remaining.minute}/min ${remaining.hour}/hour ${remaining.day}/day`
+        `${resp.status} ${url.pathname} ${label(key)} remaining=${s.remaining.minute}/min ${s.remaining.hour}/hour ${s.remaining.day}/day`
       );
       return resp;
     });
@@ -161,16 +280,37 @@ const ROLE_MODELS = {
   // last message is from the assistant"), burning a full step budget per try.
 };
 
-// Reads the pacer's latest budget snapshot; returns {hour, day, month}
-// remaining counts if the snapshot is fresh (<15 min), else null.
+const BUCKET_LIMITS = { hour: 200, day: 1000, month: 3000 };
+
+// Reads the pacer's latest budget snapshot and aggregates remaining counts
+// across all keys. A key without a fresh (<15 min) per-key snapshot counts
+// as full — the same optimism the pacer itself has for untouched keys.
+// Returns {hour, day, month, keyCount}, or null when no key has fresh data.
 function freshBudget() {
   try {
     const snap = JSON.parse(readFileSync(BUDGET_PATH, "utf-8"));
-    const ageMin = (Date.now() - Date.parse(snap.updatedAt)) / 60000;
-    const { hour, day, month } = snap.remaining ?? {};
-    if (ageMin >= 0 && ageMin < 15 && typeof hour === "number") {
-      return { hour, day: day ?? null, month: month ?? null };
+    const entries =
+      Array.isArray(snap.keys) && snap.keys.length
+        ? snap.keys
+        : [{ updatedAt: snap.updatedAt, remaining: snap.remaining }]; // pre-multi-key format
+    const total = { hour: 0, day: 0, month: 0 };
+    let anyFresh = false;
+    for (const e of entries) {
+      const ageMin = (Date.now() - Date.parse(e.updatedAt)) / 60000;
+      const fresh = ageMin >= 0 && ageMin < 15 && typeof e.remaining?.hour === "number";
+      if (fresh) anyFresh = true;
+      for (const b of ["hour", "day", "month"]) {
+        // a bucket the pacer stamped exhausted counts as empty until its TTL
+        // passes (markExhausted nulls the count, so `remaining` can't tell)
+        const stamp = e.exhausted?.[b];
+        if (typeof stamp === "number" && stamp > 0 && Date.now() - stamp < RESET_TTL_MS[b]) {
+          anyFresh = true;
+          continue;
+        }
+        total[b] += fresh && typeof e.remaining[b] === "number" ? e.remaining[b] : BUCKET_LIMITS[b];
+      }
     }
+    if (anyFresh) return { ...total, keyCount: entries.length };
   } catch {}
   return null;
 }
@@ -204,7 +344,8 @@ export const server = async (_input) => {
       const b = freshBudget();
       if (b !== null && budgetIsLow(b)) {
         throw new Error(
-          `SAIA budget LOW (${b.hour} left this hour, ${b.day ?? "?"} today, ${b.month ?? "?"} this month) — ` +
+          `SAIA budget LOW (~${b.hour} left this hour across ${b.keyCount} key(s), ` +
+            `~${b.day} today, ~${b.month} this month) — ` +
             `a subagent chain needs ~20-40 requests. Refusing to start the chain — ` +
             `report this to the user and stop; retry after the bucket resets.`
         );
@@ -213,8 +354,6 @@ export const server = async (_input) => {
     },
 
     config: async (config) => {
-      installPacer();
-
       let key;
       try {
         const authPath = join(homedir(), ".local/share/opencode/auth.json");
@@ -225,6 +364,19 @@ export const server = async (_input) => {
       }
 
       if (!key) return;
+
+      // Optional failover keys: KEYS_PATH holds {"keys": ["...", ...]} in
+      // rotation order after the auth.json key (always #1). A missing or
+      // unreadable file means single-key behavior, exactly as before.
+      let keys = [key];
+      try {
+        const extra = JSON.parse(readFileSync(KEYS_PATH, "utf-8"));
+        if (Array.isArray(extra?.keys)) {
+          keys = [...new Set([key, ...extra.keys.filter((k) => typeof k === "string" && k)])];
+        }
+      } catch {}
+      installPacer(keys);
+      pacerDebugLog(`pacer: ${keys.length} SAIA key(s) in rotation`);
 
       let cached;
       try {
@@ -307,8 +459,8 @@ export const server = async (_input) => {
       if (b !== null) {
         status =
           (budgetIsLow(b) ? "LOW" : "HEALTHY") +
-          `: ${b.hour} requests left this hour, ${b.day ?? "?"} today, ` +
-          `${b.month ?? "?"} this month (sustainable pace ≈100/day)`;
+          `: ~${b.hour} requests left this hour across ${b.keyCount} key(s), ~${b.day} today, ` +
+          `~${b.month} this month (sustainable pace ≈${100 * b.keyCount}/day)`;
       }
       for (const [role, promptFile] of [
         ["auto", "prompts/auto.md"],

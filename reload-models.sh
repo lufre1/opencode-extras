@@ -10,16 +10,33 @@
 set -euo pipefail
 
 AUTH_FILE="$HOME/.local/share/opencode/auth.json"
+KEYS_FILE="$HOME/.local/share/opencode/saia-gwdg-keys.json"
 CACHE_FILE="$HOME/.cache/opencode/saia-gwdg-models.json"
 
-KEY="$(python3 -c "
-import json
-print(json.load(open('$AUTH_FILE'))['saia-gwdg']['key'])
+# auth.json key first, then any extra failover keys (same order as the plugin)
+KEYS="$(AUTH_FILE="$AUTH_FILE" KEYS_FILE="$KEYS_FILE" python3 -c "
+import json, os
+keys = [json.load(open(os.environ['AUTH_FILE']))['saia-gwdg']['key']]
+try:
+    for k in json.load(open(os.environ['KEYS_FILE'])).get('keys', []):
+        if isinstance(k, str) and k and k not in keys:
+            keys.append(k)
+except Exception:
+    pass
+print('\n'.join(keys))
 " 2>/dev/null)" || { echo "ERROR: could not read saia-gwdg key from $AUTH_FILE" >&2; exit 1; }
 
-BODY="$(curl -sS --fail --max-time 60 https://chat-ai.academiccloud.de/v1/models \
-  -H "Authorization: Bearer $KEY")" \
-  || { echo "ERROR: /v1/models fetch failed — cache left untouched" >&2; exit 1; }
+BODY=""
+while IFS= read -r KEY; do
+  [[ -z "$KEY" ]] && continue
+  if BODY="$(curl -sS --fail --max-time 60 https://chat-ai.academiccloud.de/v1/models \
+      -H "Authorization: Bearer $KEY")"; then
+    break
+  fi
+  BODY=""
+  echo "WARN: /v1/models fetch failed with one key — trying the next" >&2
+done <<<"$KEYS"
+[[ -n "$BODY" ]] || { echo "ERROR: /v1/models fetch failed with all keys — cache left untouched" >&2; exit 1; }
 
 mkdir -p "$(dirname "$CACHE_FILE")"
 BODY="$BODY" CACHE_FILE="$CACHE_FILE" python3 - <<'PYEOF'

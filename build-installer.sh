@@ -15,6 +15,7 @@ MANIFEST=(
   opencode.jsonc
   saia-gwdg-plugin.js
   reload-models.sh
+  usage.sh
   prompts/auto.md
   prompts/coder.md
   prompts/debugger.md
@@ -56,10 +57,11 @@ cat >"$TMP_OUT" <<OC_GEN_HEADER
 #
 # Installs the GWDG SAIA auto-mode setup for opencode: provider + plugin,
 # agents (solo, auto, coder, coder2, researcher, debugger) with their
-# prompts, the /reload_models helper script, and the API key in
-# ~/.local/share/opencode/auth.json.
+# prompts, the /reload_models and /usage helper scripts, and the API key in
+# ~/.local/share/opencode/auth.json. Extra failover keys (optional) go to
+# ~/.local/share/opencode/saia-gwdg-keys.json via GWDG_API_KEYS_EXTRA.
 #
-# Usage: [GWDG_API_KEY=...] bash install-auto-mode.sh [--yes] [--force-key]
+# Usage: [GWDG_API_KEY=... GWDG_API_KEYS_EXTRA=key2,key3] bash install-auto-mode.sh [--yes] [--force-key]
 #
 OC_GEN_HEADER
 
@@ -77,11 +79,14 @@ OPENCODE_MISSING=0
 
 usage() {
   cat <<'USAGE'
-Usage: [GWDG_API_KEY=...] bash install-auto-mode.sh [OPTIONS]
+Usage: [GWDG_API_KEY=... GWDG_API_KEYS_EXTRA=key2,key3] bash install-auto-mode.sh [OPTIONS]
 
 Installs the GWDG SAIA auto-mode setup for opencode:
   - opencode.jsonc, saia-gwdg-plugin.js, prompts/*.md into ~/.config/opencode
   - API key into ~/.local/share/opencode/auth.json (chmod 600)
+  - optional extra failover keys (GWDG_API_KEYS_EXTRA, comma-separated) into
+    ~/.local/share/opencode/saia-gwdg-keys.json (chmod 600) — the plugin
+    switches to the next key when the active one's rate budget is exhausted
   - offers to install opencode itself if missing
 
 Options:
@@ -228,6 +233,34 @@ PYEOF
   log "API key written to $AUTH_FILE (chmod 600)."
 }
 
+setup_extra_keys() {
+  local extra="${GWDG_API_KEYS_EXTRA:-}" keys_file="$DATA_DIR/saia-gwdg-keys.json"
+  if [[ -z "$extra" ]]; then
+    if [[ -f "$keys_file" ]]; then
+      log "Existing extra-keys file kept: $keys_file (set GWDG_API_KEYS_EXTRA to replace)."
+    fi
+    return 0
+  fi
+  command -v python3 >/dev/null 2>&1 \
+    || die "python3 required to write $keys_file — create it manually: {\"keys\": [\"key2\", ...]}"
+  if [[ -f "$keys_file" ]]; then
+    backup_existing "saia-gwdg-keys.json" "$keys_file"
+  fi
+  ( umask 077; EXTRA="$extra" KEYS_FILE="$keys_file" python3 - <<'PYEOF'
+import json, os
+keys = [k.strip() for k in os.environ["EXTRA"].split(",") if k.strip()]
+path = os.environ["KEYS_FILE"]
+tmp = path + ".tmp"
+with open(tmp, "w") as fh:
+    json.dump({"keys": keys}, fh, indent=2)
+    fh.write("\n")
+os.replace(tmp, path)
+print(f"{len(keys)} extra failover key(s) written to {path}")
+PYEOF
+  )
+  chmod 600 "$keys_file"
+}
+
 verify() {
   if [[ $OPENCODE_MISSING -eq 1 ]]; then
     log ""
@@ -261,8 +294,9 @@ verify() {
   fi
 }
 
-chmod 755 "$CONFIG_DIR/reload-models.sh"
+chmod 755 "$CONFIG_DIR/reload-models.sh" "$CONFIG_DIR/usage.sh"
 setup_auth_key
+setup_extra_keys
 verify
 OC_GEN_FOOTER
 
