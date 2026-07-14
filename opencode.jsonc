@@ -2,6 +2,10 @@
   "$schema": "https://opencode.ai/config.json",
   "plugin": ["./saia-gwdg-plugin.js"],
   "command": {
+    "usage": {
+      "description": "Show SAIA request budget and per-model token usage (costs 1 request)",
+      "template": "Current SAIA usage report, generated locally at command time:\n\n!`bash \"${XDG_CONFIG_HOME:-$HOME/.config}/opencode/usage.sh\"`\n\nRepeat the report above to the user verbatim in one fenced code block. No commentary, no analysis, no tool calls."
+    },
     "reload_models": {
       "description": "Force-refresh the SAIA model list cache (1 API request; restart opencode afterwards)",
       "template": "Run this exact command with the bash tool and report its output verbatim: bash \"${XDG_CONFIG_HOME:-$HOME/.config}/opencode/reload-models.sh\". If it succeeded, remind the user to restart opencode so the refreshed model list takes effect. Requires bash permission — run from the solo or build agent, not auto."
