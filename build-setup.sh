@@ -48,7 +48,7 @@ TMP_OUT="$(mktemp "$OUT.XXXXXX")"
 trap 'rm -f "$TMP_OUT"' EXIT
 
 # ── Header (interpolates the stamp) ──────────────────────────────────
-cat >"$TMP_OUT" <<'OC_GEN_HEADER'
+cat >"$TMP_OUT" <<OC_GEN_HEADER
 #!/usr/bin/env bash
 #
 # setup-saia-opencode.sh — GENERATED FILE, DO NOT EDIT.
@@ -217,17 +217,9 @@ write_file() {  # $1 = path relative to CONFIG_DIR; content on stdin
   log "  wrote: $dest"
 }
 
-write_file_if() {  # $1 = flag (0/1), $2 = relative path; content on stdin
-  local flag="$1" rel="$2"
-  if [[ $flag -eq 1 ]]; then
-    write_file "$rel"
-  else
-    log "  skipped (disabled): $CONFIG_DIR/$rel"
-  fi
-}
 
 ensure_opencode
-log "Installing auto-mode config to $CONFIG_DIR"
+log "Installing SAIA config to $CONFIG_DIR"
 OC_GEN_BODY
 
 # ── Embedded config files ────────────────────────────────────────────
@@ -236,7 +228,7 @@ printf '\nwrite_file "opencode.jsonc" <<\'"'"'%s'"'"'\n' "$DELIM" >>"$TMP_OUT"
 cat opencode.jsonc >>"$TMP_OUT"
 printf '%s\n' "$DELIM" >>"$TMP_OUT"
 
-# Always embed all prompt files; write_file_if will conditionally write based on flags
+# Always embed all prompt files; cleanup_disabled_prompts removes disabled prompt files
 printf '\nwrite_file "prompts/solo.md" <<\'"'"'%s'"'"'\n' "$DELIM" >>"$TMP_OUT"
 cat prompts/solo.md >>"$TMP_OUT"
 printf '%s\n' "$DELIM" >>"$TMP_OUT"
@@ -409,7 +401,9 @@ PYEOF
 
 # Clean up prompt files that are disabled
 cleanup_disabled_prompts() {
-  if [[ $INSTALL_SOLO -eq 0 ]]; then
+  # Only remove solo and debugger when neither orchestrator is installed
+  # (auto also uses @debugger for Phase 3 validation)
+  if [[ $INSTALL_SOLO -eq 0 ]] && [[ $INSTALL_AUTO -eq 0 ]]; then
     rm -f "$CONFIG_DIR/prompts/solo.md"
     rm -f "$CONFIG_DIR/prompts/debugger.md"
     log "  removed (disabled): prompts/solo.md"

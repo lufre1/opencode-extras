@@ -328,7 +328,7 @@ const LOW_MONTH_THRESHOLD = 60;
 // A chain/task shouldn't start when any bucket is too tight to fit one.
 function budgetIsLow(b) {
   return (
-    b.hour < LOW_HOUR_THRESHOLD ||
+    (b.hour !== null && b.hour < LOW_HOUR_THRESHOLD) ||
     (b.day !== null && b.day < LOW_DAY_THRESHOLD) ||
     (b.month !== null && b.month < LOW_MONTH_THRESHOLD)
   );
