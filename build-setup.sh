@@ -395,6 +395,47 @@ PYEOF
   chmod 600 "$keys_file"
 }
 
+# Fix plugin path to absolute (resolves against CONFIG_DIR)
+fix_plugin_path() {
+  local input="$CONFIG_DIR/opencode.jsonc"
+  
+  if [[ ! -f "$input" ]]; then
+    return 0
+  fi
+  
+  if ! command -v python3 >/dev/null 2>&1; then
+    log "  python3 not found - cannot fix plugin path, skipping"
+    return 0
+  fi
+  
+  ( umask 077; python3 - "$input" "$CONFIG_DIR" <<'PYEOF'
+import json, os, sys
+input_path = sys.argv[1]
+config_dir = sys.argv[2]
+
+with open(input_path) as fh:
+    data = json.load(fh)
+
+plugin = data.get("plugin", [])
+changed = False
+for i, p in enumerate(plugin):
+    if p == "./saia-gwdg-plugin.js" or p == "saia-gwdg-plugin.js":
+        plugin[i] = os.path.join(config_dir, "saia-gwdg-plugin.js")
+        changed = True
+
+if changed:
+    data["plugin"] = plugin
+    tmp = input_path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(data, fh, indent=2)
+        fh.write("\n")
+    os.replace(tmp, input_path)
+    log("  fixed plugin path: " + plugin[i])
+
+PYEOF
+  )
+}
+
 # Filter opencode.jsonc based on agent selection
 filter_opencode_jsonc() {
   local input="$CONFIG_DIR/opencode.jsonc"
@@ -528,6 +569,7 @@ verify() {
 chmod 755 "$CONFIG_DIR/reload-models.sh" "$CONFIG_DIR/usage.sh"
 setup_auth_key
 setup_extra_keys
+fix_plugin_path
 filter_opencode_jsonc
 cleanup_disabled_prompts
 verify
