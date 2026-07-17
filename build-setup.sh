@@ -183,7 +183,6 @@ ensure_opencode() {
     export PATH="$HOME/.opencode/bin:$PATH"
     command -v opencode >/dev/null 2>&1 || die "opencode still not found after install"
     log "opencode installed: $(command -v opencode)"
-    ensure_path_in_shellrc
   else
     OPENCODE_MISSING=1
     log "Skipping opencode install — config files will still be installed; verification will be skipped."
@@ -236,6 +235,11 @@ write_file() {  # $1 = path relative to CONFIG_DIR; content on stdin
 
 
 ensure_opencode
+
+if [[ $OPENCODE_MISSING -eq 0 ]]; then
+  ensure_path_in_shellrc
+fi
+
 log "Installing SAIA config to $CONFIG_DIR"
 OC_GEN_BODY
 
@@ -268,6 +272,45 @@ printf '%s\n' "$DELIM" >>"$TMP_OUT"
 printf '\nwrite_file "prompts/debugger.md" <<\'"'"'%s'"'"'\n' "$DELIM" >>"$TMP_OUT"
 cat prompts/debugger.md >>"$TMP_OUT"
 printf '%s\n' "$DELIM" >>"$TMP_OUT"
+
+cat >>"$TMP_OUT" <<'__OC_EMBED_RELOAD'
+write_file "reload-models.sh" <<'__OC_FILE_EOF__'
+#!/usr/bin/env bash
+# reload-models.sh — force-refresh the GWDG model list cache
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+CACHE="$HOME/.cache/opencode/saia-gwdg-models.json"
+mkdir -p "$(dirname "$CACHE")"
+mv -f "$CACHE" "$CACHE.backup" 2>/dev/null || true
+echo "Fetching fresh model list from SAIA..."
+echo "Run 'opencode models' to verify (1 API request of your rate budget)."
+__OC_FILE_EOF__
+__OC_EMBED_RELOAD
+
+cat >>"$TMP_OUT" <<'__OC_EMBED_USAGE'
+write_file "usage.sh" <<'__OC_FILE_EOF__'
+#!/usr/bin/env bash
+# usage.sh — report SAIA request budget and per-model token usage
+set -euo pipefail
+CACHE="$HOME/.cache/opencode/saia-gwdg-models.json"
+BUDGET_FILE="$HOME/.cache/opencode/saia-gwdg-budget.json"
+echo "# SAIA Usage Report ($(date +%Y-%m-%dT%H:%M:%S))"
+echo "---"
+if [[ -f "$CACHE" ]]; then
+  echo "Model list cached: $(stat -c %y "$CACHE" 2>/dev/null || stat -f %Sm "$CACHE" 2>/dev/null || echo 'unknown time')"
+else
+  echo "Model list: not cached"
+fi
+if [[ -f "$BUDGET_FILE" ]]; then
+  echo ""
+  echo "Budget status from last response:"
+  cat "$BUDGET_FILE"
+else
+  echo ""
+  echo "Budget status: unknown (awaiting first response)"
+fi
+__OC_FILE_EOF__
+__OC_EMBED_USAGE
 
 # ── Footer: API key + verification ───────────────────────────────────
 cat >>"$TMP_OUT" <<'OC_GEN_FOOTER'
