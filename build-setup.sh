@@ -430,7 +430,7 @@ if changed:
         json.dump(data, fh, indent=2)
         fh.write("\n")
     os.replace(tmp, input_path)
-    log("  fixed plugin path: " + plugin[i])
+    print("  fixed plugin path: " + plugin[i])
 
 PYEOF
   )

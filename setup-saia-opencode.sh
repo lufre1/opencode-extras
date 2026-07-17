@@ -2,7 +2,7 @@
 #
 # setup-saia-opencode.sh — GENERATED FILE, DO NOT EDIT.
 # Regenerate with: ./build-setup.sh  (in the opencode config repo)
-# Source: opencode-config commit dc32757, packed 2026-07-17T07:52:37Z
+# Source: opencode-config commit beb1e24, packed 2026-07-17T07:56:00Z
 #
 # Installs the GWDG SAIA setup for opencode: provider + plugin, and optional
 # agents (solo, auto, coder, coder2, researcher, debugger) with their prompts.
@@ -839,7 +839,7 @@ if changed:
         json.dump(data, fh, indent=2)
         fh.write("\n")
     os.replace(tmp, input_path)
-    log("  fixed plugin path: " + plugin[i])
+    print("  fixed plugin path: " + plugin[i])
 
 PYEOF
   )
