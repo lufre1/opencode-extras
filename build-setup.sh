@@ -14,6 +14,7 @@ OUT="setup-saia-opencode.sh"
 MANIFEST=(
   opencode.jsonc
   saia-gwdg-plugin.js
+  yagni.md
   reload-models.sh
   usage.sh
   prompts/auto.md
@@ -249,6 +250,16 @@ printf '\nwrite_file "opencode.jsonc" <<\'"'"'%s'"'"'\n' "$DELIM" >>"$TMP_OUT"
 cat opencode.jsonc >>"$TMP_OUT"
 printf '%s\n' "$DELIM" >>"$TMP_OUT"
 
+# Write the plugin (was missing — embedded at install time)
+printf '\nwrite_file "saia-gwdg-plugin.js" <<\'"'"'%s'"'"'\n' "$DELIM" >>"$TMP_OUT"
+cat saia-gwdg-plugin.js >>"$TMP_OUT"
+printf '%s\n' "$DELIM" >>"$TMP_OUT"
+
+# Write yagni.md instruction file (relative path, resolved at install time)
+printf '\nwrite_file "yagni.md" <<\'"'"'%s'"'"'\n' "$DELIM" >>"$TMP_OUT"
+cat yagni.md >>"$TMP_OUT"
+printf '%s\n' "$DELIM" >>"$TMP_OUT"
+
 # Always embed all prompt files; cleanup_disabled_prompts removes disabled prompt files
 printf '\nwrite_file "prompts/solo.md" <<\'"'"'%s'"'"'\n' "$DELIM" >>"$TMP_OUT"
 cat prompts/solo.md >>"$TMP_OUT"
@@ -436,6 +447,47 @@ PYEOF
   )
 }
 
+# Fix instructions path to absolute (resolves ./yagni.md → CONFIG_DIR/yagni.md)
+fix_instructions_path() {
+  local input="$CONFIG_DIR/opencode.jsonc"
+  
+  if [[ ! -f "$input" ]]; then
+    return 0
+  fi
+  
+  if ! command -v python3 >/dev/null 2>&1; then
+    log "  python3 not found - cannot fix instructions path, skipping"
+    return 0
+  fi
+  
+  ( umask 077; python3 - "$input" "$CONFIG_DIR" <<'PYEOF'
+import json, os, sys
+input_path = sys.argv[1]
+config_dir = sys.argv[2]
+
+with open(input_path) as fh:
+    data = json.load(fh)
+
+instructions = data.get("instructions", [])
+changed = False
+for i, path in enumerate(instructions):
+    if path == "./yagni.md":
+        instructions[i] = os.path.join(config_dir, "yagni.md")
+        changed = True
+
+if changed:
+    data["instructions"] = instructions
+    tmp = input_path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(data, fh, indent=2)
+        fh.write("\n")
+    os.replace(tmp, input_path)
+    print("  fixed instructions path: " + instructions[i])
+
+PYEOF
+  )
+}
+
 # Filter opencode.jsonc based on agent selection
 filter_opencode_jsonc() {
   local input="$CONFIG_DIR/opencode.jsonc"
@@ -571,6 +623,7 @@ setup_auth_key
 setup_extra_keys
 filter_opencode_jsonc
 fix_plugin_path
+fix_instructions_path
 cleanup_disabled_prompts
 verify
 OC_GEN_FOOTER
