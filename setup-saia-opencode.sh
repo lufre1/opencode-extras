@@ -128,9 +128,26 @@ ensure_opencode() {
     export PATH="$HOME/.opencode/bin:$PATH"
     command -v opencode >/dev/null 2>&1 || die "opencode still not found after install"
     log "opencode installed: $(command -v opencode)"
+    ensure_path_in_shellrc
   else
     OPENCODE_MISSING=1
     log "Skipping opencode install — config files will still be installed; verification will be skipped."
+  fi
+}
+
+ensure_path_in_shellrc() {
+  local line='export PATH="$HOME/.opencode/bin:$PATH"'
+  local rc
+  case "${SHELL##*/}" in
+    zsh)  rc="$HOME/.zshrc" ;;
+    bash) rc="$HOME/.bashrc" ;;
+    *)    rc="$HOME/.profile" ;;
+  esac
+  if ! grep -qxF "$line" "$rc" 2>/dev/null; then
+    printf '\n# added by setup-saia-opencode.sh\n%s\n' "$line" >> "$rc"
+    log "Added opencode to PATH in $rc (source it or restart your shell)"
+  else
+    log "PATH entry already present in $rc"
   fi
 }
 
@@ -177,6 +194,10 @@ log "Installing auto-mode config to $CONFIG_DIR"
 write_file "opencode.jsonc" <<'__OC_FILE_EOF__'
 {
   "$schema": "https://opencode.ai/config.json",
+  // Appended to every agent's system prompt (including the built-in
+  // plan/build prompts, which cannot be extended per-agent). Absolute path:
+  // relative instructions paths resolve against the project dir, not here.
+  "instructions": ["/home/freckmann15/.config/opencode/yagni.md"],
   "plugin": ["./saia-gwdg-plugin.js"],
   "command": {
     "usage": {

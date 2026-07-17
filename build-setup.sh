@@ -183,9 +183,26 @@ ensure_opencode() {
     export PATH="$HOME/.opencode/bin:$PATH"
     command -v opencode >/dev/null 2>&1 || die "opencode still not found after install"
     log "opencode installed: $(command -v opencode)"
+    ensure_path_in_shellrc
   else
     OPENCODE_MISSING=1
     log "Skipping opencode install — config files will still be installed; verification will be skipped."
+  fi
+}
+
+ensure_path_in_shellrc() {
+  local line='export PATH="$HOME/.opencode/bin:$PATH"'
+  local rc
+  case "${SHELL##*/}" in
+    zsh)  rc="$HOME/.zshrc" ;;
+    bash) rc="$HOME/.bashrc" ;;
+    *)    rc="$HOME/.profile" ;;
+  esac
+  if ! grep -qxF "$line" "$rc" 2>/dev/null; then
+    printf '\n# added by setup-saia-opencode.sh\n%s\n' "$line" >> "$rc"
+    log "Added opencode to PATH in $rc (source it or restart your shell)"
+  else
+    log "PATH entry already present in $rc"
   fi
 }
 
