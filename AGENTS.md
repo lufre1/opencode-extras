@@ -14,8 +14,8 @@ This directory configures the `opencode` AI assistant to use the GWDG SAIA OpenA
 | `auth.json` (in `~/.local/share/opencode/`) | Stores API key (chmod 600) |
 | `saia-gwdg-keys.json` (in `~/.local/share/opencode/`) | Optional extra failover keys `{"keys": [...]}` (chmod 600); auth.json key is always #1 |
 | `reload-models.sh` | Force-refreshes the weekly SAIA model cache (run via `/reload_models` command) |
-| `build-installer.sh` | Packs the live config into `install-auto-mode.sh` — rerun after config changes |
-| `install-auto-mode.sh` | Generated self-contained installer for other devices (never edit directly) |
+| `build-setup.sh` | Packs the live config into `setup-saia-opencode.sh` — rerun after config changes |
+| `setup-saia-opencode.sh` | Generated self-contained installer for other devices (never edit directly) |
 
 ## Agents
 
@@ -66,13 +66,13 @@ opencode              # start session with default (build) agent
 opencode models       # list all available GWDG models (weekly cache)
 opencode providers    # show provider status
 ./reload-models.sh    # force-refresh the model cache (also /reload_models in-session)
-./build-installer.sh  # regenerate install-auto-mode.sh after config changes
+./build-setup.sh      # regenerate setup-saia-opencode.sh after config changes
 ```
 
 ## Common Mistakes
 
-- Editing `install-auto-mode.sh` directly → it is generated; changes are lost on the next `./build-installer.sh`
-- Changing `opencode.jsonc`/plugin/`prompts/` without rerunning `./build-installer.sh` → installer drifts from the live config
+- Editing `setup-saia-opencode.sh` directly → it is generated; changes are lost on the next `./build-setup.sh`
+- Changing `opencode.jsonc`/plugin/`prompts/` without rerunning `./build-setup.sh` → installer drifts from the live config
 - Moving `saia-gwdg-plugin.js` or `prompts/` → relative paths in `opencode.jsonc` will break
 - Reordering `agent.auto.permission.task` so `"*": "deny"` comes after the named allows → last-match-wins resolution denies all subagents and silently removes the `task` tool from auto
 - Renaming the `__SAIA_BUDGET_STATUS__` placeholder in `prompts/auto.md` or `prompts/solo.md` (or moving the files) → the plugin's prompt injection silently stops and the budget check degrades to skipped

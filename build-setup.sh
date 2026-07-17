@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build-installer.sh — pack the live auto-mode config into install-auto-mode.sh
+# build-setup.sh — pack the live SAIA config into setup-saia-opencode.sh
 #
 # Reads the current opencode.jsonc, saia-gwdg-plugin.js, and prompts/*.md and
 # emits a single self-contained installer that can be copied to other devices.
@@ -10,7 +10,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 DELIM="${OC_DELIM_OVERRIDE:-__OC_FILE_EOF__}"
-OUT="install-auto-mode.sh"
+OUT="setup-saia-opencode.sh"
 MANIFEST=(
   opencode.jsonc
   saia-gwdg-plugin.js
@@ -48,20 +48,18 @@ TMP_OUT="$(mktemp "$OUT.XXXXXX")"
 trap 'rm -f "$TMP_OUT"' EXIT
 
 # ── Header (interpolates the stamp) ──────────────────────────────────
-cat >"$TMP_OUT" <<OC_GEN_HEADER
+cat >"$TMP_OUT" <<'OC_GEN_HEADER'
 #!/usr/bin/env bash
 #
-# install-auto-mode.sh — GENERATED FILE, DO NOT EDIT.
-# Regenerate with: ./build-installer.sh  (in the opencode config repo)
+# setup-saia-opencode.sh — GENERATED FILE, DO NOT EDIT.
+# Regenerate with: ./build-setup.sh  (in the opencode config repo)
 # Source: opencode-config commit $COMMIT$DIRTY, packed $STAMP
 #
-# Installs the GWDG SAIA auto-mode setup for opencode: provider + plugin,
-# agents (solo, auto, coder, coder2, researcher, debugger) with their
-# prompts, the /reload_models and /usage helper scripts, and the API key in
-# ~/.local/share/opencode/auth.json. Extra failover keys (optional) go to
-# ~/.local/share/opencode/saia-gwdg-keys.json via GWDG_API_KEYS_EXTRA.
+# Installs the GWDG SAIA setup for opencode: provider + plugin, and optional
+# agents (solo, auto, coder, coder2, researcher, debugger) with their prompts.
+# Use flags or interactive prompts to choose which agents to install.
 #
-# Usage: [GWDG_API_KEY=... GWDG_API_KEYS_EXTRA=key2,key3] bash install-auto-mode.sh [--yes] [--force-key]
+# Usage: [GWDG_API_KEY=... GWDG_API_KEYS_EXTRA=key2,key3] bash setup-saia-opencode.sh [OPTIONS]
 #
 OC_GEN_HEADER
 
@@ -75,23 +73,31 @@ AUTH_FILE="$DATA_DIR/auth.json"
 BACKUP_DIR=""
 ASSUME_YES=0
 FORCE_KEY=0
+INSTALL_SOLO=2
+INSTALL_AUTO=2
 OPENCODE_MISSING=0
 
 usage() {
   cat <<'USAGE'
-Usage: [GWDG_API_KEY=... GWDG_API_KEYS_EXTRA=key2,key3] bash install-auto-mode.sh [OPTIONS]
+Usage: [GWDG_API_KEY=... GWDG_API_KEYS_EXTRA=key2,key3] bash setup-saia-opencode.sh [OPTIONS]
 
-Installs the GWDG SAIA auto-mode setup for opencode:
+Installs the GWDG SAIA setup for opencode:
   - opencode.jsonc, saia-gwdg-plugin.js, prompts/*.md into ~/.config/opencode
   - API key into ~/.local/share/opencode/auth.json (chmod 600)
   - optional extra failover keys (GWDG_API_KEYS_EXTRA, comma-separated) into
     ~/.local/share/opencode/saia-gwdg-keys.json (chmod 600) — the plugin
     switches to the next key when the active one's rate budget is exhausted
   - offers to install opencode itself if missing
+  - optional agents: solo (default workhorse), auto (orchestrator)
+    (default: prompt interactively unless --yes is passed)
 
 Options:
   -y, --yes        answer yes to prompts (e.g. installing opencode)
-      --force-key  replace an existing saia-gwdg API key
+       --solo      install the solo agent (default: ask)
+       --auto      install the auto agent (default: ask)
+       --no-solo   skip the solo agent (default: ask)
+       --no-auto   skip the auto agent (default: ask)
+       --force-key replace an existing saia-gwdg API key
   -h, --help       show this help
 
 The API key is taken from the GWDG_API_KEY environment variable if set,
@@ -104,10 +110,56 @@ for arg in "$@"; do
   case "$arg" in
     -y|--yes) ASSUME_YES=1 ;;
     --force-key) FORCE_KEY=1 ;;
+    --solo) INSTALL_SOLO=1 ;;
+    --auto) INSTALL_AUTO=1 ;;
+    --no-solo) INSTALL_SOLO=0 ;;
+    --no-auto) INSTALL_AUTO=0 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $arg" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+if [[ $ASSUME_YES -eq 1 ]]; then
+  # If --yes is passed but no explicit agent flags, default to skip both
+  # Only override if user has not explicitly chosen with --solo/--no-solo/--auto/--no-auto
+  if [[ $INSTALL_SOLO -eq 2 ]]; then
+    INSTALL_SOLO=0
+  fi
+  if [[ $INSTALL_AUTO -eq 2 ]]; then
+    INSTALL_AUTO=0
+  fi
+fi
+
+# Final defaults for any remaining "ask" (2) values - prompt if terminal available
+if [[ $INSTALL_SOLO -eq 2 ]]; then
+  if [[ $ASSUME_YES -eq 1 ]]; then
+    INSTALL_SOLO=0
+  elif [[ -t 0 ]]; then
+    read -r -p "Install the 'solo' agent? [y/N] " reply
+    if [[ $reply == [yY]* ]]; then
+      INSTALL_SOLO=1
+    else
+      INSTALL_SOLO=0
+    fi
+  else
+    INSTALL_SOLO=0
+  fi
+fi
+
+if [[ $INSTALL_AUTO -eq 2 ]]; then
+  if [[ $ASSUME_YES -eq 1 ]]; then
+    INSTALL_AUTO=0
+  elif [[ -t 0 ]]; then
+    read -r -p "Install the 'auto' agent? [y/N] " reply
+    if [[ $reply == [yY]* ]]; then
+      INSTALL_AUTO=1
+    else
+      INSTALL_AUTO=0
+    fi
+  else
+    INSTALL_AUTO=0
+  fi
+fi
 
 log() { printf '%s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -165,18 +217,48 @@ write_file() {  # $1 = path relative to CONFIG_DIR; content on stdin
   log "  wrote: $dest"
 }
 
+write_file_if() {  # $1 = flag (0/1), $2 = relative path; content on stdin
+  local flag="$1" rel="$2"
+  if [[ $flag -eq 1 ]]; then
+    write_file "$rel"
+  else
+    log "  skipped (disabled): $CONFIG_DIR/$rel"
+  fi
+}
+
 ensure_opencode
 log "Installing auto-mode config to $CONFIG_DIR"
 OC_GEN_BODY
 
 # ── Embedded config files ────────────────────────────────────────────
-for f in "${MANIFEST[@]}"; do
-  {
-    printf '\nwrite_file %q <<'\''%s'\''\n' "$f" "$DELIM"
-    cat "$f"
-    printf '%s\n' "$DELIM"
-  } >>"$TMP_OUT"
-done
+# Write the full opencode.jsonc (we'll filter at install time)
+printf '\nwrite_file "opencode.jsonc" <<\'"'"'%s'"'"'\n' "$DELIM" >>"$TMP_OUT"
+cat opencode.jsonc >>"$TMP_OUT"
+printf '%s\n' "$DELIM" >>"$TMP_OUT"
+
+# Always embed all prompt files; write_file_if will conditionally write based on flags
+printf '\nwrite_file "prompts/solo.md" <<\'"'"'%s'"'"'\n' "$DELIM" >>"$TMP_OUT"
+cat prompts/solo.md >>"$TMP_OUT"
+printf '%s\n' "$DELIM" >>"$TMP_OUT"
+
+printf '\nwrite_file "prompts/auto.md" <<\'"'"'%s'"'"'\n' "$DELIM" >>"$TMP_OUT"
+cat prompts/auto.md >>"$TMP_OUT"
+printf '%s\n' "$DELIM" >>"$TMP_OUT"
+
+printf '\nwrite_file "prompts/coder.md" <<\'"'"'%s'"'"'\n' "$DELIM" >>"$TMP_OUT"
+cat prompts/coder.md >>"$TMP_OUT"
+printf '%s\n' "$DELIM" >>"$TMP_OUT"
+
+# coder2 uses the same prompt as coder (prompts/coder.md)
+# Note: no coder2.md file exists - coder2 agent references prompts/coder.md
+
+printf '\nwrite_file "prompts/researcher.md" <<\'"'"'%s'"'"'\n' "$DELIM" >>"$TMP_OUT"
+cat prompts/researcher.md >>"$TMP_OUT"
+printf '%s\n' "$DELIM" >>"$TMP_OUT"
+
+printf '\nwrite_file "prompts/debugger.md" <<\'"'"'%s'"'"'\n' "$DELIM" >>"$TMP_OUT"
+cat prompts/debugger.md >>"$TMP_OUT"
+printf '%s\n' "$DELIM" >>"$TMP_OUT"
 
 # ── Footer: API key + verification ───────────────────────────────────
 cat >>"$TMP_OUT" <<'OC_GEN_FOOTER'
@@ -261,6 +343,89 @@ PYEOF
   chmod 600 "$keys_file"
 }
 
+# Filter opencode.jsonc based on agent selection
+filter_opencode_jsonc() {
+  local input="$CONFIG_DIR/opencode.jsonc"
+  
+  if [[ ! -f "$input" ]]; then
+    return 0
+  fi
+  
+  if ! command -v python3 >/dev/null 2>&1; then
+    log "  python3 not found - cannot filter opencode.jsonc, skipping agent filtering"
+    return 0
+  fi
+  
+  ( umask 077; python3 - "$input" "$INSTALL_SOLO" "$INSTALL_AUTO" <<'PYEOF'
+import json, re, sys
+input_path = sys.argv[1]
+install_solo = int(sys.argv[2])
+install_auto = int(sys.argv[3])
+
+# Strip JSONC comments (// line comments) before parsing
+with open(input_path) as fh:
+    lines = fh.readlines()
+
+# Only strip // comments that appear at the start of a line (after optional whitespace)
+# URLs in JSON strings like https:// are not stripped because // is not at line start
+cleaned = []
+for line in lines:
+    stripped = re.sub(r'^(\s*)//.*$', r'\1', line)
+    cleaned.append(stripped)
+content = '\n'.join(cleaned)
+
+data = json.loads(content)
+
+agent = data.get("agent", {})
+
+# Remove unused agent blocks based on flags
+if install_solo == 0 and "solo" in agent:
+    del agent["solo"]
+if install_auto == 0:
+    for a in ["auto", "coder", "coder2", "researcher"]:
+        if a in agent:
+            del agent[a]
+if install_solo == 0 and "debugger" in agent:
+    del agent["debugger"]
+
+# Clean up empty agent dict
+if not agent:
+    del data["agent"]
+else:
+    data["agent"] = agent
+
+# Write filtered config
+with open(input_path + ".tmp", "w") as fh:
+    json.dump(data, fh, indent=2)
+    fh.write("\n")
+import os
+os.replace(input_path + ".tmp", input_path)
+
+PYEOF
+  )
+  chmod 644 "$input"
+  log "  filtered: $input (solo=$INSTALL_SOLO, auto=$INSTALL_AUTO)"
+}
+
+# Clean up prompt files that are disabled
+cleanup_disabled_prompts() {
+  if [[ $INSTALL_SOLO -eq 0 ]]; then
+    rm -f "$CONFIG_DIR/prompts/solo.md"
+    rm -f "$CONFIG_DIR/prompts/debugger.md"
+    log "  removed (disabled): prompts/solo.md"
+    log "  removed (disabled): prompts/debugger.md"
+  fi
+  
+  if [[ $INSTALL_AUTO -eq 0 ]]; then
+    rm -f "$CONFIG_DIR/prompts/auto.md"
+    rm -f "$CONFIG_DIR/prompts/coder.md"
+    rm -f "$CONFIG_DIR/prompts/researcher.md"
+    log "  removed (disabled): prompts/auto.md"
+    log "  removed (disabled): prompts/coder.md"
+    log "  removed (disabled): prompts/researcher.md"
+  fi
+}
+
 verify() {
   if [[ $OPENCODE_MISSING -eq 1 ]]; then
     log ""
@@ -278,9 +443,21 @@ verify() {
       log "Previous files were backed up to $BACKUP_DIR"
     fi
     log ""
-    log "Next steps: run 'opencode', press Tab until the 'solo' agent (default"
-    log "workhorse) or 'auto' (orchestrator for big tasks) is selected, and give"
-    log "it a task. Subagents: @coder, @coder2, @researcher, @debugger."
+    if [[ $INSTALL_SOLO -eq 1 ]] && [[ $INSTALL_AUTO -eq 1 ]]; then
+      log "Next steps: run 'opencode', press Tab until the 'solo' agent (default"
+      log "workhorse) or 'auto' (orchestrator for big tasks) is selected, and give"
+      log "it a task. Subagents: @coder, @coder2, @researcher, @debugger."
+    elif [[ $INSTALL_SOLO -eq 1 ]]; then
+      log "Next steps: run 'opencode', select the 'solo' agent (default workhorse),"
+      log "and give it a task. Subagent: @debugger."
+    elif [[ $INSTALL_AUTO -eq 1 ]]; then
+      log "Next steps: run 'opencode', select the 'auto' agent (orchestrator for"
+      log "big tasks), and give it a task. Subagents: @coder, @coder2, @researcher"
+      log "(debugger only when needed)."
+    else
+      log "Next steps: run 'opencode' with the built-in agents (build, plan)."
+      log "Install solo/auto later to get full functionality."
+    fi
     log "Force-refresh the weekly model cache with /reload_models."
   else
     {
@@ -297,6 +474,8 @@ verify() {
 chmod 755 "$CONFIG_DIR/reload-models.sh" "$CONFIG_DIR/usage.sh"
 setup_auth_key
 setup_extra_keys
+filter_opencode_jsonc
+cleanup_disabled_prompts
 verify
 OC_GEN_FOOTER
 
