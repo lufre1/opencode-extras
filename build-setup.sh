@@ -569,8 +569,8 @@ verify() {
 chmod 755 "$CONFIG_DIR/reload-models.sh" "$CONFIG_DIR/usage.sh"
 setup_auth_key
 setup_extra_keys
-fix_plugin_path
 filter_opencode_jsonc
+fix_plugin_path
 cleanup_disabled_prompts
 verify
 OC_GEN_FOOTER

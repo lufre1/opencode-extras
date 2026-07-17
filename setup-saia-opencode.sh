@@ -2,7 +2,7 @@
 #
 # setup-saia-opencode.sh — GENERATED FILE, DO NOT EDIT.
 # Regenerate with: ./build-setup.sh  (in the opencode config repo)
-# Source: opencode-config commit 64aca5e, packed 2026-07-17T07:47:20Z
+# Source: opencode-config commit dc32757, packed 2026-07-17T07:52:37Z
 #
 # Installs the GWDG SAIA setup for opencode: provider + plugin, and optional
 # agents (solo, auto, coder, coder2, researcher, debugger) with their prompts.
@@ -978,7 +978,7 @@ verify() {
 chmod 755 "$CONFIG_DIR/reload-models.sh" "$CONFIG_DIR/usage.sh"
 setup_auth_key
 setup_extra_keys
-fix_plugin_path
 filter_opencode_jsonc
+fix_plugin_path
 cleanup_disabled_prompts
 verify
