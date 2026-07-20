@@ -23,11 +23,13 @@ This directory configures the `opencode` AI assistant to use the GWDG SAIA OpenA
 |-------|------|-----------------------------|------|-------|-------------|--------|
 | `build` | Primary | global/model | default | - | Full | built-in |
 | `plan` | Primary | global/model | default | - | Ask (edit/bash) | built-in |
+| `general` | Subagent (native) | deepseek-v4-flash | default | - | built-in | built-in |
+| `explore` | Subagent (native) | qwen3-coder-next | default | - | built-in (read-only) | built-in |
 | `solo` | Primary | qwen3-coder-next | 0.2 | 25 | Full + task (debugger only, `*` denied); `skill`, `todowrite`, `webfetch` disabled | `prompts/solo.md` |
 | `auto` | Primary | qwen3.5-122b-a10b | 0.2 | 10 | Read-only (read/glob/grep/list) + task (researcher/coder/coder2/debugger, `*` denied); `skill`, `todowrite`, `webfetch` disabled | `prompts/auto.md` |
 | `coder` | Subagent | qwen3-coder-next | 0.2 | 20 | Full; `skill` disabled | `prompts/coder.md` |
 | `coder2` | Subagent | glm-4.7 | 0.2 | 20 | Full; `skill` disabled | `prompts/coder.md` |
-| `researcher` | Subagent | qwen3.5-397b-a17b | 0.2 | 8 | Read-only; `skill`, `webfetch` disabled | `prompts/researcher.md` |
+| `researcher` | Subagent | qwen3.5-122b-a10b | 0.2 | 8 | Read-only; `skill`, `webfetch` disabled | `prompts/researcher.md` |
 | `debugger` | Subagent | qwen3-coder-next | 0.1 | 8 | Full; `skill`, `todowrite`, `webfetch` disabled | `prompts/debugger.md` |
 
 ### Usage
@@ -58,6 +60,7 @@ When you press `Tab` to select `auto` and give it a task, it runs a 5-phase loop
 - Plugin auto-detects model capabilities (attachment support, reasoning)
 - Plugin overrides each agent's model via `ROLE_MODELS` in `saia-gwdg-plugin.js`
 - Built-in agents (`build`, `plan`) remain available alongside custom agents
+- Native subagents (`general`, `explore`) are declared as stubs in `opencode.jsonc` and are **never** stripped by the installer's agent filter — so declining both primaries (`solo`/`auto`) still leaves `@general` and `@explore` available (each pinned to a SAIA model via the plugin's `ROLE_MODELS`)
 
 ## Commands
 

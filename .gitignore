@@ -2,3 +2,9 @@
 .auth.json
 saia-gwdg-keys.json
 *.bak
+
+# Local tooling / deps (not part of the setup source)
+node_modules/
+package.json
+package-lock.json
+.claude/

@@ -523,6 +523,10 @@ data = json.loads(content)
 
 agent = data.get("agent", {})
 
+# NOTE: never add "general"/"explore" to any deletion list below — they are
+# opencode's native subagents and must survive every install path so the user
+# always has at least one working subagent, even when both primaries are declined.
+
 # Remove unused agent blocks based on flags
 if install_solo == 0 and "solo" in agent:
     del agent["solo"]

@@ -2,7 +2,7 @@
 #
 # setup-saia-opencode.sh — GENERATED FILE, DO NOT EDIT.
 # Regenerate with: ./build-setup.sh  (in the opencode config repo)
-# Source: opencode-config commit 39e015c-dirty, packed 2026-07-17T08:20:05Z
+# Source: opencode-config commit 805bff7-dirty, packed 2026-07-20T13:43:11Z
 #
 # Installs the GWDG SAIA setup for opencode: provider + plugin, and optional
 # agents (solo, auto, coder, coder2, researcher, debugger) with their prompts.
@@ -220,6 +220,12 @@ write_file "opencode.jsonc" <<'__OC_FILE_EOF__'
     // Stub so the plugin's ROLE_MODELS can pin the built-in build agent's
     // model (the plugin skips roles absent from config.agent).
     "build": {},
+    // Native opencode subagents. Declared as stubs so they survive every install
+    // path (the filter only deletes named custom agents) AND so the plugin's
+    // ROLE_MODELS can pin them a model — otherwise no subagent survives when both
+    // custom primaries (solo/auto) are declined.
+    "general": {},
+    "explore": {},
     "solo": {
       "description": "Default workhorse: plans, implements, self-checks in one session, then independent @debugger validation (~5-12 requests/task)",
       "mode": "primary",
@@ -615,7 +621,8 @@ const ROLE_MODELS = {
   solo:       ["qwen3-coder-next", "glm-4.7"],
   // Orchestrator: best rule-following per request; deepseek-v4-flash demoted
   // (ignores prompt rules under task pressure — verified 2026-07-13).
-  auto:       ["qwen3.5-122b-a10b", "qwen3.5-397b-a17b", "deepseek-v4-flash"],
+  // qwen3.5-397b-a17b dropped — its endpoint hangs (see researcher note below).
+  auto:       ["qwen3.5-122b-a10b", "deepseek-v4-flash"],
   // Planning is the highest-leverage request in the chain. qwen3.5-397b was
   // removed entirely: its endpoint hung on 3 of 4 dispatches (2026-07-13/14),
   // stalling the whole chain — a "ready"-but-hanging model is worse than none.
@@ -630,6 +637,10 @@ const ROLE_MODELS = {
   // Fix rounds run on a DIFFERENT model family to break correlated errors.
   coder2:     ["glm-4.7", "mistral-medium-3.5-128b"],
   debugger:   ["qwen3-coder-next", "openai-gpt-oss-120b"],
+  // Native opencode subagents (always shipped). general is a versatile
+  // read+write helper; explore is read-only search — kept cheaper.
+  general:    ["deepseek-v4-flash", "qwen3-coder-next"],
+  explore:    ["qwen3-coder-next", "qwen3.5-122b-a10b"],
   // devstral-2 is excluded everywhere: its SAIA chat template rejects
   // opencode's step-cap continuation ("Cannot set add_generation_prompt ...
   // last message is from the assistant"), burning a full step budget per try.
@@ -1434,6 +1445,10 @@ content = '\n'.join(cleaned)
 data = json.loads(content)
 
 agent = data.get("agent", {})
+
+# NOTE: never add "general"/"explore" to any deletion list below — they are
+# opencode's native subagents and must survive every install path so the user
+# always has at least one working subagent, even when both primaries are declined.
 
 # Remove unused agent blocks based on flags
 if install_solo == 0 and "solo" in agent:

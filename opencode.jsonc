@@ -30,6 +30,12 @@
     // Stub so the plugin's ROLE_MODELS can pin the built-in build agent's
     // model (the plugin skips roles absent from config.agent).
     "build": {},
+    // Native opencode subagents. Declared as stubs so they survive every install
+    // path (the filter only deletes named custom agents) AND so the plugin's
+    // ROLE_MODELS can pin them a model — otherwise no subagent survives when both
+    // custom primaries (solo/auto) are declined.
+    "general": {},
+    "explore": {},
     "solo": {
       "description": "Default workhorse: plans, implements, self-checks in one session, then independent @debugger validation (~5-12 requests/task)",
       "mode": "primary",
