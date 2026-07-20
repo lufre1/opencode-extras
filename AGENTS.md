@@ -6,14 +6,19 @@ This directory configures the `opencode` AI assistant to use the GWDG SAIA OpenA
 
 ### Files
 
-| File | Purpose |
-|------|---------|
-| `opencode.jsonc` | Main config: loads plugin + defines provider + agent config |
-| `saia-gwdg-plugin.js` | Fetches live model list from GWDG at startup |
-| `prompts/` | Agent system prompts, referenced via `{file:./prompts/*.md}` from opencode.jsonc |
+The repo mirrors the installed `~/.config/opencode` layout using opencode's auto-discovered folders.
+
+| File / dir | Purpose |
+|------------|---------|
+| `opencode.jsonc` | Main config: provider + inline agent definitions (plugin & commands are auto-discovered from their folders — no `plugin`/`command` entries) |
+| `plugin/saia-gwdg-plugin.js` | Runtime plugin (auto-discovered): live model list, request pacer, budget tracking, prompt injection |
+| `command/*.md` | Slash commands `/usage` and `/reload_models` (auto-discovered) |
+| `scripts/{usage,reload-models}.sh` | Backing shell scripts the commands invoke (referenced by absolute path) |
+| `prompts/` | Agent system prompts, via `{file:./prompts/*.md}`; the plugin also reads `../prompts/{auto,solo}.md` for budget injection |
+| `tool/`, `skill/` | Scaffolds (with READMEs) for future opencode custom tools / skills |
+| `yagni.md` | Global instruction appended to every agent (via `instructions`) |
 | `auth.json` (in `~/.local/share/opencode/`) | Stores API key (chmod 600) |
 | `saia-gwdg-keys.json` (in `~/.local/share/opencode/`) | Optional extra failover keys `{"keys": [...]}` (chmod 600); auth.json key is always #1 |
-| `reload-models.sh` | Force-refreshes the weekly SAIA model cache (run via `/reload_models` command) |
 | `build-setup.sh` | Packs the live config into `setup-saia-opencode.sh` — rerun after config changes |
 | `setup-saia-opencode.sh` | Generated self-contained installer for other devices (never edit directly) |
 
@@ -53,7 +58,7 @@ When you press `Tab` to select `auto` and give it a task, it runs a 5-phase loop
 ## Key Facts
 
 - **API key location**: `~/.local/share/opencode/auth.json` (plaintext, chmod 600); optional extra failover keys in `~/.local/share/opencode/saia-gwdg-keys.json`
-- **Model list**: Cached weekly — `~/.cache/opencode/saia-gwdg-models.json` is authoritative while <7 days old (zero-request launches); older/missing cache triggers one `/v1/models` fetch (stale cache as failure fallback). Force a refresh with `/reload_models` (needs bash — solo/build agent) or `./reload-models.sh`, then restart opencode
+- **Model list**: Cached weekly — `~/.cache/opencode/saia-gwdg-models.json` is authoritative while <7 days old (zero-request launches); older/missing cache triggers one `/v1/models` fetch (stale cache as failure fallback). Force a refresh with `/reload_models` (needs bash — solo/build agent) or `./scripts/reload-models.sh`, then restart opencode
 - **Rate limits (per key, all endpoints)**: 30 req/min, 200/hour, 1000/day, 3000/month — each agent step is one request; the monthly bucket is the binding long-term constraint (sustainable pace ≈100 requests/day per key); a hung run usually means every key's bucket is exhausted
 - **Request pacer**: the plugin wraps `fetch` for the SAIA host — spaces requests ≥2.1s apart (can't trip 30/min), retries a 429 once after the advertised reset, and rotates through the configured keys: it rewrites the `Authorization` header to the active key on every request, tracks each key's budget separately, and fails over to the next usable key when the active one hits the floor (≤5 hourly / ≤10 daily / ≤30 monthly remain) or 429s despite pacing; an exhausted key re-enters rotation after its bucket's reset TTL (hour 60 min / day 24 h / month 30 d). It aborts with a clear error only when ALL keys are exhausted, or after 3 consecutive 5xx responses (SAIA outages return 500s that still consume budget, and opencode would retry them forever). Writes per-key remaining-budget counts to `~/.cache/opencode/saia-gwdg-budget.json` after every response that carries rate-limit headers; at startup the plugin turns that snapshot into a LOW/HEALTHY/UNKNOWN status (hour/day/month summed across keys) injected into the `auto` and `solo` prompts via the `__SAIA_BUDGET_STATUS__` placeholder, and a `tool.execute.before` hook hard-refuses the first `task` call of a session when the aggregate budget is LOW (<40 hour / <50 day / <60 month; in-flight chains are never cut off; the pacer floors guard the tail). Set `SAIA_PACER_DEBUG=1` to log each request (with the active key label) to `~/.cache/opencode/saia-gwdg-pacer.log`
 - **Only ready models** are exposed (status check in plugin)
@@ -68,15 +73,16 @@ When you press `Tab` to select `auto` and give it a task, it runs a 5-phase loop
 opencode              # start session with default (build) agent
 opencode models       # list all available GWDG models (weekly cache)
 opencode providers    # show provider status
-./reload-models.sh    # force-refresh the model cache (also /reload_models in-session)
-./build-setup.sh      # regenerate setup-saia-opencode.sh after config changes
+./scripts/reload-models.sh   # force-refresh the model cache (also /reload_models in-session)
+./build-setup.sh             # regenerate setup-saia-opencode.sh after config changes
 ```
 
 ## Common Mistakes
 
 - Editing `setup-saia-opencode.sh` directly → it is generated; changes are lost on the next `./build-setup.sh`
-- Changing `opencode.jsonc`/plugin/`prompts/` without rerunning `./build-setup.sh` → installer drifts from the live config
-- Moving `saia-gwdg-plugin.js` or `prompts/` → relative paths in `opencode.jsonc` will break
+- Changing `opencode.jsonc`, `plugin/`, `command/`, `scripts/`, or `prompts/` without rerunning `./build-setup.sh` → installer drifts from the live config
+- Re-adding a `plugin` array or `command` block to `opencode.jsonc` → duplicates the auto-discovered plugin/commands (they load from `plugin/` and `command/` on their own)
+- Moving `prompts/` out of the config root, or moving the plugin without updating its `join(dir, "..", "prompts/…")` read → the plugin's budget injection and the `{file:./prompts/*.md}` refs both break
 - Reordering `agent.auto.permission.task` so `"*": "deny"` comes after the named allows → last-match-wins resolution denies all subagents and silently removes the `task` tool from auto
 - Renaming the `__SAIA_BUDGET_STATUS__` placeholder in `prompts/auto.md` or `prompts/solo.md` (or moving the files) → the plugin's prompt injection silently stops and the budget check degrades to skipped
 - Making an agent read files outside the project (e.g. `~/.cache`) → `external_directory` permission is auto-rejected in non-interactive runs and kills the run at that step

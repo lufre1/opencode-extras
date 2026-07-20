@@ -478,8 +478,10 @@ export const server = async (_input) => {
         ["solo", "prompts/solo.md"],
       ]) {
         try {
+          // This plugin lives in <config>/plugin/; prompts/ is a child of the
+          // config root, one level up — hence the "..".
           const dir = dirname(fileURLToPath(import.meta.url));
-          const txt = readFileSync(join(dir, promptFile), "utf-8");
+          const txt = readFileSync(join(dir, "..", promptFile), "utf-8");
           if (config.agent?.[role] && txt.includes("__SAIA_BUDGET_STATUS__")) {
             config.agent[role].prompt = txt.replaceAll("__SAIA_BUDGET_STATUS__", status);
             pacerDebugLog(`budget-status injected into ${role} prompt: ${status}`);

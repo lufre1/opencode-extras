@@ -2,7 +2,7 @@
 #
 # setup-saia-opencode.sh — GENERATED FILE, DO NOT EDIT.
 # Regenerate with: ./build-setup.sh  (in the opencode config repo)
-# Source: opencode-config commit 6d3e89e-dirty, packed 2026-07-20T15:08:55Z
+# Source: opencode-config commit c129252-dirty, packed 2026-07-20T15:44:23Z
 #
 # Installs the GWDG SAIA setup for opencode: provider + plugin, and optional
 # agents (solo, auto, coder, coder2, researcher, debugger) with their prompts.
@@ -27,7 +27,7 @@ usage() {
 Usage: [GWDG_API_KEY=... GWDG_API_KEYS_EXTRA=key2,key3] bash setup-saia-opencode.sh [OPTIONS]
 
 Installs the GWDG SAIA setup for opencode:
-  - opencode.jsonc, saia-gwdg-plugin.js, prompts/*.md into ~/.config/opencode
+  - opencode.jsonc, plugin/, command/, scripts/, prompts/*.md into ~/.config/opencode
   - API key into ~/.local/share/opencode/auth.json (chmod 600)
   - optional extra failover keys (GWDG_API_KEYS_EXTRA, comma-separated) into
     ~/.local/share/opencode/saia-gwdg-keys.json (chmod 600) — the plugin
@@ -194,17 +194,8 @@ write_file "opencode.jsonc" <<'__OC_FILE_EOF__'
   // plan/build prompts, which cannot be extended per-agent).
   // Relative path: resolved to absolute at install time.
   "instructions": ["./yagni.md"],
-  "plugin": ["./saia-gwdg-plugin.js"],
-  "command": {
-    "usage": {
-      "description": "Show SAIA request budget and per-model token usage (costs 1 request)",
-      "template": "Current SAIA usage report, generated locally at command time:\n\n!`bash \"${XDG_CONFIG_HOME:-$HOME/.config}/opencode/usage.sh\"`\n\nRepeat the report above to the user verbatim in one fenced code block. No commentary, no analysis, no tool calls."
-    },
-    "reload_models": {
-      "description": "Force-refresh the SAIA model list cache (1 API request; restart opencode afterwards)",
-      "template": "Run this exact command with the bash tool and report its output verbatim: bash \"${XDG_CONFIG_HOME:-$HOME/.config}/opencode/reload-models.sh\". If it succeeded, remind the user to restart opencode so the refreshed model list takes effect. Requires bash permission — run from the solo or build agent, not auto."
-    }
-  },
+  // The plugin is auto-discovered from plugin/ (no "plugin" array needed).
+  // Commands live in command/*.md (/usage, /reload_models).
   "provider": {
     "saia-gwdg": {
       "npm": "@ai-sdk/openai-compatible",
@@ -362,7 +353,7 @@ write_file "opencode.jsonc" <<'__OC_FILE_EOF__'
 }
 __OC_FILE_EOF__
 
-write_file "saia-gwdg-plugin.js" <<'__OC_FILE_EOF__'
+write_file "plugin/saia-gwdg-plugin.js" <<'__OC_FILE_EOF__'
 import { readFileSync, writeFileSync, mkdirSync, appendFileSync } from "fs";
 import { homedir } from "os";
 import { join, dirname } from "path";
@@ -843,8 +834,10 @@ export const server = async (_input) => {
         ["solo", "prompts/solo.md"],
       ]) {
         try {
+          // This plugin lives in <config>/plugin/; prompts/ is a child of the
+          // config root, one level up — hence the "..".
           const dir = dirname(fileURLToPath(import.meta.url));
-          const txt = readFileSync(join(dir, promptFile), "utf-8");
+          const txt = readFileSync(join(dir, "..", promptFile), "utf-8");
           if (config.agent?.[role] && txt.includes("__SAIA_BUDGET_STATUS__")) {
             config.agent[role].prompt = txt.replaceAll("__SAIA_BUDGET_STATUS__", status);
             pacerDebugLog(`budget-status injected into ${role} prompt: ${status}`);
@@ -881,71 +874,227 @@ requirements, and nothing more.
   everything else must justify its existence.
 __OC_FILE_EOF__
 
-write_file "prompts/solo.md" <<'__OC_FILE_EOF__'
-# Solo (builder + independent checker)
+write_file "command/usage.md" <<'__OC_FILE_EOF__'
+---
+description: Show SAIA request budget and per-model token usage (costs 1 request)
+---
+Current SAIA usage report, generated locally at command time:
 
-You are the default workhorse: one strong agent that plans, implements, and
-self-checks a task in a single session with full context, then hands the
-result to the independent @debugger for validation. You have full tool access.
+!`bash "${XDG_CONFIG_HOME:-$HOME/.config}/opencode/scripts/usage.sh"`
 
-## BUDGET GATE — evaluate BEFORE your first tool call
+Repeat the report above to the user verbatim in one fenced code block. No commentary, no analysis, no tool calls.
+__OC_FILE_EOF__
 
-Session-start budget status: `__SAIA_BUDGET_STATUS__`
+write_file "command/reload_models.md" <<'__OC_FILE_EOF__'
+---
+description: Force-refresh the SAIA model list cache (1 API request; restart opencode afterwards)
+---
+Run this exact command with the bash tool and report its output verbatim: bash "${XDG_CONFIG_HOME:-$HOME/.config}/opencode/scripts/reload-models.sh". If it succeeded, remind the user to restart opencode so the refreshed model list takes effect. Requires bash permission — run from the solo or build agent, not auto.
+__OC_FILE_EOF__
 
-If that status starts with LOW: your ENTIRE response is to report those numbers
-to the user and stop — no tool calls. A solo run needs ~5-12 requests; starting
-one on a LOW budget risks dying mid-task. If it starts with HEALTHY or UNKNOWN
-— or still shows the literal placeholder — proceed normally. Never try to read
-budget/cache files yourself: paths outside the project are permission-blocked
-and the attempt kills the run.
+write_file "scripts/usage.sh" <<'__OC_FILE_EOF__'
+#!/usr/bin/env bash
+#
+# usage.sh — print the SAIA request budget and per-model token usage.
+#
+# Data sources (both maintained automatically):
+#   ~/.cache/opencode/saia-gwdg-budget.json  — pacer snapshot of the
+#       x-ratelimit-remaining-* headers, rewritten on every SAIA response
+#   ~/.local/share/opencode/opencode.db      — opencode's message store
+#
+# Free when run directly in a terminal. The /usage command in opencode
+# splices this output into a prompt, so there it costs 1 SAIA request.
+#
+set -euo pipefail
 
-## REQUEST ECONOMY (every step is one rate-limited API request)
+exec python3 - <<'PYEOF'
+import json
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
 
-Batch independent tool calls (multiple reads/globs, several edits, chained
-bash commands) into a single step instead of one call per step. Keep the whole
-task within ~10 of your own steps. Always use paths RELATIVE to the project
-root in tool calls — never retype an absolute path; one typo lands outside the
-project, the permission system auto-rejects it, and the run dies.
+BUDGET_PATH = Path.home() / ".cache/opencode/saia-gwdg-budget.json"
+DB_PATH = Path.home() / ".local/share/opencode/opencode.db"
 
-## WORKFLOW
+# Bucket limits, LOW thresholds and reset TTLs mirror saia-gwdg-plugin.js.
+LIMITS = {"minute": 30, "hour": 200, "day": 1000, "month": 3000}
+LOW_THRESHOLDS = {"hour": 40, "day": 50, "month": 60}
+RESET_TTL_MIN = {"hour": 60, "day": 24 * 60, "month": 30 * 24 * 60}
 
-1. **Restate** the user's task in one sentence.
-2. **Plan inline** (before any edit): a short plan naming the files to change
-   and 1-3 ACCEPTANCE CRITERIA — each a runnable command with an expected,
-   observable result. "Code looks clean" is not a criterion.
-3. **Implement**, matching the surrounding code's style, naming, and idiom.
-4. **Self-check**: actually run the acceptance commands. Fix what fails.
-5. **Independent validation (MANDATORY)**: task @debugger with your acceptance
-   criteria plus a short CHANGES summary (files touched, what changed). Require
-   a VERDICT block back with quoted real output for every criterion.
-6. **On FAIL**: exactly ONE fix round — fix the quoted failures, re-task
-   @debugger to re-run ALL criteria. If still FAIL, stop and report failure.
 
-## COMPLETION PROTOCOL (non-negotiable)
+def human(n):
+    for unit, div in (("B", 1e9), ("M", 1e6), ("k", 1e3)):
+        if n >= div:
+            return f"{n / div:.1f}{unit}"
+    return str(int(n))
 
-You may declare success ONLY IF the most recent @debugger response contains
-`VERDICT: PASS` with quoted real command output for EVERY acceptance criterion.
-Your own self-check is not sufficient evidence.
 
-- If the validation task call is refused by the budget gate, report the work
-  as completed-but-UNVALIDATED and say why — never claim PASS.
-- If validation ends without PASS, report failure: quote the remaining
-  FAILURES verbatim and list the unmet criteria. An honest failure report is a
-  successful outcome; a false success claim is the worst possible outcome.
+def budget_section():
+    print("SAIA request budget (remaining/limit, per key)")
+    try:
+        snap = json.loads(BUDGET_PATH.read_text())
+    except (OSError, ValueError):
+        print("  no budget snapshot yet — it appears after the first SAIA request")
+        return
+    entries = snap.get("keys")
+    if not isinstance(entries, list) or not entries:  # pre-multi-key snapshot format
+        entries = [{"label": "key1", "updatedAt": snap.get("updatedAt"),
+                    "remaining": snap.get("remaining")}]
+    active = snap.get("activeIndex", 0)
+    now = datetime.now(timezone.utc)
+    # Aggregate mirrors the plugin's freshBudget(): a key without fresh data
+    # counts as full (its buckets have likely reset since last seen).
+    totals = dict.fromkeys(LOW_THRESHOLDS, 0)
+    width = max(len(e.get("label") or f"key{i + 1}") for i, e in enumerate(entries))
+    for i, e in enumerate(entries):
+        remaining = e.get("remaining") or {}
+        try:
+            updated = datetime.fromisoformat(e["updatedAt"].replace("Z", "+00:00"))
+            age_min = (now - updated).total_seconds() / 60
+        except (TypeError, AttributeError, ValueError, KeyError):
+            age_min = None
+        fresh = age_min is not None and age_min < 90
+        exhausted = e.get("exhausted") or {}
+        for b in totals:
+            # a bucket the pacer stamped exhausted counts as empty until its
+            # reset TTL passes (the pacer nulls the count when stamping)
+            stamp = exhausted.get(b)
+            if isinstance(stamp, (int, float)) and stamp > 0 and \
+                    (now.timestamp() - stamp / 1000) / 60 < RESET_TTL_MIN[b]:
+                continue
+            v = remaining.get(b)
+            totals[b] += v if fresh and isinstance(v, (int, float)) else LIMITS[b]
+        counts = "   ".join(
+            f"{bucket}: {remaining.get(bucket) if remaining.get(bucket) is not None else '?'}/{limit}"
+            for bucket, limit in LIMITS.items())
+        mark = " *" if i == active and len(entries) > 1 else "  "
+        if age_min is None:
+            age = "no data yet"
+        elif fresh:
+            age = f"as of {age_min:.0f} min ago"
+        else:
+            age = f"STALE, {age_min / 60:.1f} h old — likely reset since"
+        print(f"  {e.get('label') or f'key{i + 1}':<{width}}{mark} {counts}   ({age})")
+    low = [b for b, threshold in LOW_THRESHOLDS.items() if totals[b] < threshold]
+    status = ("LOW (" + ", ".join(f"{b} < {LOW_THRESHOLDS[b]}" for b in low) + ")"
+              if low else "HEALTHY")
+    if len(entries) > 1:
+        print("  total: " + "   ".join(
+            f"{b}: ~{int(totals[b])}/{LIMITS[b] * len(entries)}" for b in LOW_THRESHOLDS)
+            + "   (* = active key; stale keys counted as full)")
+    print(f"  status: {status}   (snapshot updates on every request)")
 
-Delegation happens ONLY through an actual `task` tool call — writing
-"@debugger" in your response text invokes nothing.
 
-## Expected from @debugger
+def collect(db, since_ms):
+    per_model = {}
+    for (data,) in db.execute(
+            "SELECT data FROM message WHERE time_created >= ?", (since_ms,)):
+        try:
+            msg = json.loads(data)
+        except ValueError:
+            continue
+        if msg.get("role") != "assistant" or msg.get("providerID") != "saia-gwdg":
+            continue
+        tokens = msg.get("tokens") or {}
+        row = per_model.setdefault(msg.get("modelID") or "?", [0, 0, 0, 0])
+        row[0] += 1
+        row[1] += tokens.get("input") or 0
+        row[2] += tokens.get("output") or 0
+        row[3] += tokens.get("reasoning") or 0
+    return per_model
 
-```
-## VERDICT: PASS | FAIL
-CRITERIA RESULTS:
-1. <criterion> — PASS/FAIL — command run: `<cmd>`
-   output: <verbatim, trimmed>
-FAILURES: (only if FAIL)
-- <criterion #>: symptom, suspected cause (file:line), suggested fix
-```
+
+def usage_table(title, per_model):
+    print(f"\n{title}")
+    if not per_model:
+        print("  (none)")
+        return
+    width = max(len("total"), *(len(m) for m in per_model))
+    print(f"  {'model':<{width}}  {'requests':>8}  {'input':>8}  "
+          f"{'output':>8}  {'reasoning':>9}")
+    totals = [0, 0, 0, 0]
+    for model, row in sorted(per_model.items(), key=lambda kv: -kv[1][0]):
+        print(f"  {model:<{width}}  {row[0]:>8}  {human(row[1]):>8}  "
+              f"{human(row[2]):>8}  {human(row[3]):>9}")
+        totals = [a + b for a, b in zip(totals, row)]
+    print(f"  {'total':<{width}}  {totals[0]:>8}  {human(totals[1]):>8}  "
+          f"{human(totals[2]):>8}  {human(totals[3]):>9}")
+
+
+budget_section()
+midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+month_start = midnight.replace(day=1)
+try:
+    db = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=3)
+    try:
+        usage_table(f"Usage today (since {midnight:%Y-%m-%d %H:%M})",
+                    collect(db, midnight.timestamp() * 1000))
+        usage_table(f"Usage this month (since {month_start:%Y-%m-%d})",
+                    collect(db, month_start.timestamp() * 1000))
+    finally:
+        db.close()
+except sqlite3.Error as exc:
+    print(f"\nUsage history unavailable (opencode.db: {exc})")
+PYEOF
+__OC_FILE_EOF__
+
+write_file "scripts/reload-models.sh" <<'__OC_FILE_EOF__'
+#!/usr/bin/env bash
+#
+# reload-models.sh — force-refresh the SAIA model list cache.
+#
+# Fetches /v1/models from GWDG (1 request of the shared rate budget) and
+# rewrites ~/.cache/opencode/saia-gwdg-models.json with a fresh fetchedAt,
+# so the plugin's weekly TTL restarts. Invoked by the /reload_models command
+# or manually. The refreshed list takes effect at the NEXT opencode launch.
+#
+set -euo pipefail
+
+AUTH_FILE="$HOME/.local/share/opencode/auth.json"
+KEYS_FILE="$HOME/.local/share/opencode/saia-gwdg-keys.json"
+CACHE_FILE="$HOME/.cache/opencode/saia-gwdg-models.json"
+
+# auth.json key first, then any extra failover keys (same order as the plugin)
+KEYS="$(AUTH_FILE="$AUTH_FILE" KEYS_FILE="$KEYS_FILE" python3 -c "
+import json, os
+keys = [json.load(open(os.environ['AUTH_FILE']))['saia-gwdg']['key']]
+try:
+    for k in json.load(open(os.environ['KEYS_FILE'])).get('keys', []):
+        if isinstance(k, str) and k and k not in keys:
+            keys.append(k)
+except Exception:
+    pass
+print('\n'.join(keys))
+" 2>/dev/null)" || { echo "ERROR: could not read saia-gwdg key from $AUTH_FILE" >&2; exit 1; }
+
+BODY=""
+while IFS= read -r KEY; do
+  [[ -z "$KEY" ]] && continue
+  if BODY="$(curl -sS --fail --max-time 60 https://chat-ai.academiccloud.de/v1/models \
+      -H "Authorization: Bearer $KEY")"; then
+    break
+  fi
+  BODY=""
+  echo "WARN: /v1/models fetch failed with one key — trying the next" >&2
+done <<<"$KEYS"
+[[ -n "$BODY" ]] || { echo "ERROR: /v1/models fetch failed with all keys — cache left untouched" >&2; exit 1; }
+
+mkdir -p "$(dirname "$CACHE_FILE")"
+BODY="$BODY" CACHE_FILE="$CACHE_FILE" python3 - <<'PYEOF'
+import json, os, time
+body = json.loads(os.environ["BODY"])
+models = body["data"]
+if not isinstance(models, list) or not models:
+    raise SystemExit("ERROR: /v1/models returned no models — cache left untouched")
+cache = os.environ["CACHE_FILE"]
+tmp = cache + ".tmp"
+with open(tmp, "w") as fh:
+    json.dump({"fetchedAt": int(time.time() * 1000), "models": models}, fh)
+os.replace(tmp, cache)
+ready = sum(1 for m in models if m.get("status") == "ready")
+print(f"Refreshed SAIA model cache: {len(models)} models, {ready} ready.")
+print("Restart opencode to load the refreshed list (models are injected at startup).")
+PYEOF
 __OC_FILE_EOF__
 
 write_file "prompts/auto.md" <<'__OC_FILE_EOF__'
@@ -1147,45 +1296,6 @@ NOTES FOR VALIDATION: <hints for the debugger>
 ```
 __OC_FILE_EOF__
 
-write_file "prompts/researcher.md" <<'__OC_FILE_EOF__'
-# Researcher (read-only analyst)
-
-You analyze codebases and requirements for an orchestrator. You have no
-edit/bash/write access — your output is findings and plans, nothing else.
-
-## Rules
-
-- Every response step costs one rate-limited API request — batch independent
-  tool calls (multiple reads/globs/greps) into a single step instead of one
-  call per step.
-- Cite exact file paths and line numbers for every claim about the code.
-- Do not speculate: verify claims by actually reading the files. If you could
-  not verify something, say so explicitly.
-- Prefer reusing existing functions, utilities, and patterns you find over
-  proposing new code — name them with their paths.
-- Every ACCEPTANCE CRITERION must be a command the debugger can execute
-  (build, test, script, curl, grep on output) with an expected observable
-  result. "Code is clean" or "works correctly" is not a criterion.
-- STEPS must be concrete enough that an implementer needs no further research.
-
-## Required output
-
-End every planning response with exactly this block:
-
-```
-## PLAN
-GOAL: <one sentence>
-CONSTRAINTS: <hard requirements, things that must not break>
-FILES TO CHANGE:
-- <path> — <what changes and why> (mark NEW if to be created)
-STEPS:
-1. <ordered, concrete implementation steps>
-ACCEPTANCE CRITERIA:
-1. <a runnable command> → <expected observable output/exit code>
-RISKS: <what could go wrong, edge cases>
-```
-__OC_FILE_EOF__
-
 write_file "prompts/debugger.md" <<'__OC_FILE_EOF__'
 # Validator
 
@@ -1225,38 +1335,111 @@ FAILURES: (only if FAIL)
 - <criterion #>: symptom, suspected cause (file:line), suggested fix
 ```
 __OC_FILE_EOF__
-write_file "reload-models.sh" <<'__OC_FILE_EOF__'
-#!/usr/bin/env bash
-# reload-models.sh — force-refresh the GWDG model list cache
-set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")"
-CACHE="$HOME/.cache/opencode/saia-gwdg-models.json"
-mkdir -p "$(dirname "$CACHE")"
-mv -f "$CACHE" "$CACHE.backup" 2>/dev/null || true
-echo "Fetching fresh model list from SAIA..."
-echo "Run 'opencode models' to verify (1 API request of your rate budget)."
+
+write_file "prompts/researcher.md" <<'__OC_FILE_EOF__'
+# Researcher (read-only analyst)
+
+You analyze codebases and requirements for an orchestrator. You have no
+edit/bash/write access — your output is findings and plans, nothing else.
+
+## Rules
+
+- Every response step costs one rate-limited API request — batch independent
+  tool calls (multiple reads/globs/greps) into a single step instead of one
+  call per step.
+- Cite exact file paths and line numbers for every claim about the code.
+- Do not speculate: verify claims by actually reading the files. If you could
+  not verify something, say so explicitly.
+- Prefer reusing existing functions, utilities, and patterns you find over
+  proposing new code — name them with their paths.
+- Every ACCEPTANCE CRITERION must be a command the debugger can execute
+  (build, test, script, curl, grep on output) with an expected observable
+  result. "Code is clean" or "works correctly" is not a criterion.
+- STEPS must be concrete enough that an implementer needs no further research.
+
+## Required output
+
+End every planning response with exactly this block:
+
+```
+## PLAN
+GOAL: <one sentence>
+CONSTRAINTS: <hard requirements, things that must not break>
+FILES TO CHANGE:
+- <path> — <what changes and why> (mark NEW if to be created)
+STEPS:
+1. <ordered, concrete implementation steps>
+ACCEPTANCE CRITERIA:
+1. <a runnable command> → <expected observable output/exit code>
+RISKS: <what could go wrong, edge cases>
+```
 __OC_FILE_EOF__
-write_file "usage.sh" <<'__OC_FILE_EOF__'
-#!/usr/bin/env bash
-# usage.sh — report SAIA request budget and per-model token usage
-set -euo pipefail
-CACHE="$HOME/.cache/opencode/saia-gwdg-models.json"
-BUDGET_FILE="$HOME/.cache/opencode/saia-gwdg-budget.json"
-echo "# SAIA Usage Report ($(date +%Y-%m-%dT%H:%M:%S))"
-echo "---"
-if [[ -f "$CACHE" ]]; then
-  echo "Model list cached: $(stat -c %y "$CACHE" 2>/dev/null || stat -f %Sm "$CACHE" 2>/dev/null || echo 'unknown time')"
-else
-  echo "Model list: not cached"
-fi
-if [[ -f "$BUDGET_FILE" ]]; then
-  echo ""
-  echo "Budget status from last response:"
-  cat "$BUDGET_FILE"
-else
-  echo ""
-  echo "Budget status: unknown (awaiting first response)"
-fi
+
+write_file "prompts/solo.md" <<'__OC_FILE_EOF__'
+# Solo (builder + independent checker)
+
+You are the default workhorse: one strong agent that plans, implements, and
+self-checks a task in a single session with full context, then hands the
+result to the independent @debugger for validation. You have full tool access.
+
+## BUDGET GATE — evaluate BEFORE your first tool call
+
+Session-start budget status: `__SAIA_BUDGET_STATUS__`
+
+If that status starts with LOW: your ENTIRE response is to report those numbers
+to the user and stop — no tool calls. A solo run needs ~5-12 requests; starting
+one on a LOW budget risks dying mid-task. If it starts with HEALTHY or UNKNOWN
+— or still shows the literal placeholder — proceed normally. Never try to read
+budget/cache files yourself: paths outside the project are permission-blocked
+and the attempt kills the run.
+
+## REQUEST ECONOMY (every step is one rate-limited API request)
+
+Batch independent tool calls (multiple reads/globs, several edits, chained
+bash commands) into a single step instead of one call per step. Keep the whole
+task within ~10 of your own steps. Always use paths RELATIVE to the project
+root in tool calls — never retype an absolute path; one typo lands outside the
+project, the permission system auto-rejects it, and the run dies.
+
+## WORKFLOW
+
+1. **Restate** the user's task in one sentence.
+2. **Plan inline** (before any edit): a short plan naming the files to change
+   and 1-3 ACCEPTANCE CRITERIA — each a runnable command with an expected,
+   observable result. "Code looks clean" is not a criterion.
+3. **Implement**, matching the surrounding code's style, naming, and idiom.
+4. **Self-check**: actually run the acceptance commands. Fix what fails.
+5. **Independent validation (MANDATORY)**: task @debugger with your acceptance
+   criteria plus a short CHANGES summary (files touched, what changed). Require
+   a VERDICT block back with quoted real output for every criterion.
+6. **On FAIL**: exactly ONE fix round — fix the quoted failures, re-task
+   @debugger to re-run ALL criteria. If still FAIL, stop and report failure.
+
+## COMPLETION PROTOCOL (non-negotiable)
+
+You may declare success ONLY IF the most recent @debugger response contains
+`VERDICT: PASS` with quoted real command output for EVERY acceptance criterion.
+Your own self-check is not sufficient evidence.
+
+- If the validation task call is refused by the budget gate, report the work
+  as completed-but-UNVALIDATED and say why — never claim PASS.
+- If validation ends without PASS, report failure: quote the remaining
+  FAILURES verbatim and list the unmet criteria. An honest failure report is a
+  successful outcome; a false success claim is the worst possible outcome.
+
+Delegation happens ONLY through an actual `task` tool call — writing
+"@debugger" in your response text invokes nothing.
+
+## Expected from @debugger
+
+```
+## VERDICT: PASS | FAIL
+CRITERIA RESULTS:
+1. <criterion> — PASS/FAIL — command run: `<cmd>`
+   output: <verbatim, trimmed>
+FAILURES: (only if FAIL)
+- <criterion #>: symptom, suspected cause (file:line), suggested fix
+```
 __OC_FILE_EOF__
 
 setup_auth_key() {
@@ -1339,46 +1522,8 @@ PYEOF
   chmod 600 "$keys_file"
 }
 
-# Fix plugin path to absolute (resolves against CONFIG_DIR)
-fix_plugin_path() {
-  local input="$CONFIG_DIR/opencode.jsonc"
-  
-  if [[ ! -f "$input" ]]; then
-    return 0
-  fi
-  
-  if ! command -v python3 >/dev/null 2>&1; then
-    log "  python3 not found - cannot fix plugin path, skipping"
-    return 0
-  fi
-  
-  ( umask 077; python3 - "$input" "$CONFIG_DIR" <<'PYEOF'
-import json, os, sys
-input_path = sys.argv[1]
-config_dir = sys.argv[2]
-
-with open(input_path) as fh:
-    data = json.load(fh)
-
-plugin = data.get("plugin", [])
-changed = False
-for i, p in enumerate(plugin):
-    if p == "./saia-gwdg-plugin.js" or p == "saia-gwdg-plugin.js":
-        plugin[i] = os.path.join(config_dir, "saia-gwdg-plugin.js")
-        changed = True
-
-if changed:
-    data["plugin"] = plugin
-    tmp = input_path + ".tmp"
-    with open(tmp, "w") as fh:
-        json.dump(data, fh, indent=2)
-        fh.write("\n")
-    os.replace(tmp, input_path)
-    print("  fixed plugin path: " + plugin[i])
-
-PYEOF
-  )
-}
+# (fix_plugin_path removed — the plugin is auto-discovered from plugin/, so
+#  there is no "plugin" array entry to rewrite to an absolute path.)
 
 # Fix instructions path to absolute (resolves ./yagni.md → CONFIG_DIR/yagni.md)
 fix_instructions_path() {
@@ -1555,11 +1700,10 @@ verify() {
   fi
 }
 
-chmod 755 "$CONFIG_DIR/reload-models.sh" "$CONFIG_DIR/usage.sh"
+chmod 755 "$CONFIG_DIR/scripts/reload-models.sh" "$CONFIG_DIR/scripts/usage.sh"
 setup_auth_key
 setup_extra_keys
 filter_opencode_jsonc
-fix_plugin_path
 fix_instructions_path
 cleanup_disabled_prompts
 verify

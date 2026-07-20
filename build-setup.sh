@@ -2,8 +2,8 @@
 #
 # build-setup.sh — pack the live SAIA config into setup-saia-opencode.sh
 #
-# Reads the current opencode.jsonc, saia-gwdg-plugin.js, and prompts/*.md and
-# emits a single self-contained installer that can be copied to other devices.
+# Reads the current opencode.jsonc, plugin/, command/, scripts/, and prompts/*.md
+# and emits a single self-contained installer that can be copied to other devices.
 # Rerun this after ANY change to those files, and commit both.
 #
 set -euo pipefail
@@ -13,10 +13,12 @@ DELIM="${OC_DELIM_OVERRIDE:-__OC_FILE_EOF__}"
 OUT="setup-saia-opencode.sh"
 MANIFEST=(
   opencode.jsonc
-  saia-gwdg-plugin.js
+  plugin/saia-gwdg-plugin.js
   yagni.md
-  reload-models.sh
-  usage.sh
+  command/usage.md
+  command/reload_models.md
+  scripts/usage.sh
+  scripts/reload-models.sh
   prompts/auto.md
   prompts/coder.md
   prompts/debugger.md
@@ -83,7 +85,7 @@ usage() {
 Usage: [GWDG_API_KEY=... GWDG_API_KEYS_EXTRA=key2,key3] bash setup-saia-opencode.sh [OPTIONS]
 
 Installs the GWDG SAIA setup for opencode:
-  - opencode.jsonc, saia-gwdg-plugin.js, prompts/*.md into ~/.config/opencode
+  - opencode.jsonc, plugin/, command/, scripts/, prompts/*.md into ~/.config/opencode
   - API key into ~/.local/share/opencode/auth.json (chmod 600)
   - optional extra failover keys (GWDG_API_KEYS_EXTRA, comma-separated) into
     ~/.local/share/opencode/saia-gwdg-keys.json (chmod 600) — the plugin
@@ -245,83 +247,37 @@ log "Installing SAIA config to $CONFIG_DIR"
 OC_GEN_BODY
 
 # ── Embedded config files ────────────────────────────────────────────
-# Write the full opencode.jsonc (we'll filter at install time)
-printf '\nwrite_file "opencode.jsonc" <<\'"'"'%s'"'"'\n' "$DELIM" >>"$TMP_OUT"
-cat opencode.jsonc >>"$TMP_OUT"
-printf '%s\n' "$DELIM" >>"$TMP_OUT"
+# pack <src> [dest]  — append an install-time `write_file` heredoc that writes
+# <src>'s contents to <dest> (relative to CONFIG_DIR; dest defaults to src).
+pack() {
+  local src="$1" dest="${2:-$1}"
+  printf '\nwrite_file "%s" <<\'"'"'%s'"'"'\n' "$dest" "$DELIM" >>"$TMP_OUT"
+  cat "$src" >>"$TMP_OUT"
+  printf '%s\n' "$DELIM" >>"$TMP_OUT"
+}
 
-# Write the plugin (was missing — embedded at install time)
-printf '\nwrite_file "saia-gwdg-plugin.js" <<\'"'"'%s'"'"'\n' "$DELIM" >>"$TMP_OUT"
-cat saia-gwdg-plugin.js >>"$TMP_OUT"
-printf '%s\n' "$DELIM" >>"$TMP_OUT"
+# Main config (filtered at install time), auto-discovered plugin, global
+# instruction file, and the command markdown (/usage, /reload_models).
+pack opencode.jsonc
+pack plugin/saia-gwdg-plugin.js
+pack yagni.md
+pack command/usage.md
+pack command/reload_models.md
 
-# Write yagni.md instruction file (relative path, resolved at install time)
-printf '\nwrite_file "yagni.md" <<\'"'"'%s'"'"'\n' "$DELIM" >>"$TMP_OUT"
-cat yagni.md >>"$TMP_OUT"
-printf '%s\n' "$DELIM" >>"$TMP_OUT"
+# Real backing scripts for the commands (previously shipped as broken stubs).
+pack scripts/usage.sh
+pack scripts/reload-models.sh
 
-# Always embed all prompt files; cleanup_disabled_prompts removes disabled prompt files
-printf '\nwrite_file "prompts/solo.md" <<\'"'"'%s'"'"'\n' "$DELIM" >>"$TMP_OUT"
-cat prompts/solo.md >>"$TMP_OUT"
-printf '%s\n' "$DELIM" >>"$TMP_OUT"
+# Agent prompts (cleanup_disabled_prompts removes disabled ones post-install;
+# coder2 reuses prompts/coder.md — there is no coder2.md).
+for p in prompts/*.md; do pack "$p"; done
 
-printf '\nwrite_file "prompts/auto.md" <<\'"'"'%s'"'"'\n' "$DELIM" >>"$TMP_OUT"
-cat prompts/auto.md >>"$TMP_OUT"
-printf '%s\n' "$DELIM" >>"$TMP_OUT"
-
-printf '\nwrite_file "prompts/coder.md" <<\'"'"'%s'"'"'\n' "$DELIM" >>"$TMP_OUT"
-cat prompts/coder.md >>"$TMP_OUT"
-printf '%s\n' "$DELIM" >>"$TMP_OUT"
-
-# coder2 uses the same prompt as coder (prompts/coder.md)
-# Note: no coder2.md file exists - coder2 agent references prompts/coder.md
-
-printf '\nwrite_file "prompts/researcher.md" <<\'"'"'%s'"'"'\n' "$DELIM" >>"$TMP_OUT"
-cat prompts/researcher.md >>"$TMP_OUT"
-printf '%s\n' "$DELIM" >>"$TMP_OUT"
-
-printf '\nwrite_file "prompts/debugger.md" <<\'"'"'%s'"'"'\n' "$DELIM" >>"$TMP_OUT"
-cat prompts/debugger.md >>"$TMP_OUT"
-printf '%s\n' "$DELIM" >>"$TMP_OUT"
-
-cat >>"$TMP_OUT" <<'__OC_EMBED_RELOAD'
-write_file "reload-models.sh" <<'__OC_FILE_EOF__'
-#!/usr/bin/env bash
-# reload-models.sh — force-refresh the GWDG model list cache
-set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")"
-CACHE="$HOME/.cache/opencode/saia-gwdg-models.json"
-mkdir -p "$(dirname "$CACHE")"
-mv -f "$CACHE" "$CACHE.backup" 2>/dev/null || true
-echo "Fetching fresh model list from SAIA..."
-echo "Run 'opencode models' to verify (1 API request of your rate budget)."
-__OC_FILE_EOF__
-__OC_EMBED_RELOAD
-
-cat >>"$TMP_OUT" <<'__OC_EMBED_USAGE'
-write_file "usage.sh" <<'__OC_FILE_EOF__'
-#!/usr/bin/env bash
-# usage.sh — report SAIA request budget and per-model token usage
-set -euo pipefail
-CACHE="$HOME/.cache/opencode/saia-gwdg-models.json"
-BUDGET_FILE="$HOME/.cache/opencode/saia-gwdg-budget.json"
-echo "# SAIA Usage Report ($(date +%Y-%m-%dT%H:%M:%S))"
-echo "---"
-if [[ -f "$CACHE" ]]; then
-  echo "Model list cached: $(stat -c %y "$CACHE" 2>/dev/null || stat -f %Sm "$CACHE" 2>/dev/null || echo 'unknown time')"
-else
-  echo "Model list: not cached"
-fi
-if [[ -f "$BUDGET_FILE" ]]; then
-  echo ""
-  echo "Budget status from last response:"
-  cat "$BUDGET_FILE"
-else
-  echo ""
-  echo "Budget status: unknown (awaiting first response)"
-fi
-__OC_FILE_EOF__
-__OC_EMBED_USAGE
+# Custom tools + skills — folder-driven, so files added later ship automatically.
+# tool/*.{js,ts} (non-recursive); skill/**/SKILL.md (recursive). nullglob → skip when empty.
+shopt -s nullglob globstar
+for t in tool/*.js tool/*.ts; do pack "$t"; done
+for s in skill/**/SKILL.md; do pack "$s"; done
+shopt -u nullglob globstar
 
 # ── Footer: API key + verification ───────────────────────────────────
 cat >>"$TMP_OUT" <<'OC_GEN_FOOTER'
@@ -406,46 +362,8 @@ PYEOF
   chmod 600 "$keys_file"
 }
 
-# Fix plugin path to absolute (resolves against CONFIG_DIR)
-fix_plugin_path() {
-  local input="$CONFIG_DIR/opencode.jsonc"
-  
-  if [[ ! -f "$input" ]]; then
-    return 0
-  fi
-  
-  if ! command -v python3 >/dev/null 2>&1; then
-    log "  python3 not found - cannot fix plugin path, skipping"
-    return 0
-  fi
-  
-  ( umask 077; python3 - "$input" "$CONFIG_DIR" <<'PYEOF'
-import json, os, sys
-input_path = sys.argv[1]
-config_dir = sys.argv[2]
-
-with open(input_path) as fh:
-    data = json.load(fh)
-
-plugin = data.get("plugin", [])
-changed = False
-for i, p in enumerate(plugin):
-    if p == "./saia-gwdg-plugin.js" or p == "saia-gwdg-plugin.js":
-        plugin[i] = os.path.join(config_dir, "saia-gwdg-plugin.js")
-        changed = True
-
-if changed:
-    data["plugin"] = plugin
-    tmp = input_path + ".tmp"
-    with open(tmp, "w") as fh:
-        json.dump(data, fh, indent=2)
-        fh.write("\n")
-    os.replace(tmp, input_path)
-    print("  fixed plugin path: " + plugin[i])
-
-PYEOF
-  )
-}
+# (fix_plugin_path removed — the plugin is auto-discovered from plugin/, so
+#  there is no "plugin" array entry to rewrite to an absolute path.)
 
 # Fix instructions path to absolute (resolves ./yagni.md → CONFIG_DIR/yagni.md)
 fix_instructions_path() {
@@ -622,11 +540,10 @@ verify() {
   fi
 }
 
-chmod 755 "$CONFIG_DIR/reload-models.sh" "$CONFIG_DIR/usage.sh"
+chmod 755 "$CONFIG_DIR/scripts/reload-models.sh" "$CONFIG_DIR/scripts/usage.sh"
 setup_auth_key
 setup_extra_keys
 filter_opencode_jsonc
-fix_plugin_path
 fix_instructions_path
 cleanup_disabled_prompts
 verify
