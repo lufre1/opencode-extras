@@ -25,11 +25,21 @@
   },
   "agent": {
     "plan": {
-      "color": "warning"
+      "color": "warning",
+      // Bound runaway loops. No temperature: plan's pinned model
+      // (deepseek-v4-flash) is NOT one opencode auto-injects a temperature for,
+      // so we leave its provider default alone (DeepSeek reasoners want it).
+      "steps": 20
     },
     // Stub so the plugin's ROLE_MODELS can pin the built-in build agent's
     // model (the plugin skips roles absent from config.agent).
-    "build": {},
+    // temperature 0.2: build's pinned model (qwen3-coder-next) IS one opencode
+    // auto-injects a temperature for (0.55); 0.2 overrides it to match @coder
+    // for deterministic implementation. steps bounds runaway loops.
+    "build": {
+      "temperature": 0.2,
+      "steps": 25
+    },
     // Native opencode subagents. Declared as stubs so they survive every install
     // path (the filter only deletes named custom agents) AND so the plugin's
     // ROLE_MODELS can pin them a model — otherwise no subagent survives when both
