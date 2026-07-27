@@ -2,7 +2,7 @@
 #
 # setup-saia-opencode.sh — GENERATED FILE, DO NOT EDIT.
 # Regenerate with: ./build-setup.sh  (in the opencode config repo)
-# Source: opencode-config commit c129252-dirty, packed 2026-07-20T15:44:23Z
+# Source: opencode-config commit 4055615-dirty, packed 2026-07-27T12:11:22Z
 #
 # Installs the GWDG SAIA setup for opencode: provider + plugin, and optional
 # agents (solo, auto, coder, coder2, researcher, debugger) with their prompts.
@@ -206,20 +206,20 @@ write_file "opencode.jsonc" <<'__OC_FILE_EOF__'
   },
   "agent": {
     "plan": {
-      "color": "warning",
-      // Bound runaway loops. No temperature: plan's pinned model
-      // (deepseek-v4-flash) is NOT one opencode auto-injects a temperature for,
-      // so we leave its provider default alone (DeepSeek reasoners want it).
-      "steps": 20
+      // No temperature: plan's pinned model (deepseek-v4-flash) is NOT one
+      // opencode auto-injects a temperature for, so we leave its provider
+      // default alone (DeepSeek reasoners want it). No steps cap either: long
+      // autonomous runs must not be cut off mid-task — the plugin's budget
+      // pacer is the runaway guard.
+      "color": "warning"
     },
     // Stub so the plugin's ROLE_MODELS can pin the built-in build agent's
     // model (the plugin skips roles absent from config.agent).
     // temperature 0.2: build's pinned model (qwen3-coder-next) IS one opencode
     // auto-injects a temperature for (0.55); 0.2 overrides it to match @coder
-    // for deterministic implementation. steps bounds runaway loops.
+    // for deterministic implementation. No steps cap, same reason as plan.
     "build": {
-      "temperature": 0.2,
-      "steps": 25
+      "temperature": 0.2
     },
     // Native opencode subagents. Declared as stubs so they survive every install
     // path (the filter only deletes named custom agents) AND so the plugin's
