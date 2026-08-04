@@ -2,7 +2,7 @@
 #
 # setup-saia-opencode.sh — GENERATED FILE, DO NOT EDIT.
 # Regenerate with: ./build-setup.sh  (in the opencode config repo)
-# Source: opencode-config commit 4055615-dirty, packed 2026-07-27T12:11:22Z
+# Source: opencode-config commit 9ce5f83-dirty, packed 2026-08-04T15:27:34Z
 #
 # Installs the GWDG SAIA setup for opencode: provider + plugin, and optional
 # agents (solo, auto, coder, coder2, researcher, debugger) with their prompts.
@@ -383,8 +383,8 @@ const MODELS_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 // - on 429, waits for the advertised reset once and retries; a second 429
 //   fails the key over; a 429 on the next key too throws
 // - aborts after 3 consecutive 5xx responses: SAIA outages return 500s that
-//   STILL consume the request budget, and opencode retries them with backoff
-//   indefinitely — an unattended run would burn the bucket against a dead API
+//   still consume the request budget; instead of hard-sticking, we now sleep
+//   30s and retry so transient blips don't require a process restart.
 // Patching global fetch (not provider options.fetch) because opencode may
 // not pass function-valued config through to the SDK.
 // ---------------------------------------------------------------------------
@@ -560,10 +560,8 @@ function installPacer(keys) {
 
     const run = queue.then(async () => {
       if (consecutive5xx >= MAX_CONSECUTIVE_5XX) {
-        throw new Error(
-          `SAIA returned ${consecutive5xx} consecutive server errors (5xx) — the service ` +
-            `looks down; aborting instead of retry-burning the request budget. Try again later.`
-        );
+        await sleep(30_000);
+        consecutive5xx = 0;
       }
       let key = pickKey();
       if (key === null) throw allExhaustedError();
