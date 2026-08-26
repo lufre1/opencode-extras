@@ -2,7 +2,7 @@
 #
 # setup-saia-opencode.sh — GENERATED FILE, DO NOT EDIT.
 # Regenerate with: ./build-setup.sh  (in the opencode config repo)
-# Source: opencode-config commit 9ce5f83-dirty, packed 2026-08-04T15:27:34Z
+# Source: opencode-config commit babedc3-dirty, packed 2026-08-26T05:53:05Z
 #
 # Installs the GWDG SAIA setup for opencode: provider + plugin, and optional
 # agents (solo, auto, coder, coder2, researcher, debugger) with their prompts.
@@ -206,7 +206,7 @@ write_file "opencode.jsonc" <<'__OC_FILE_EOF__'
   },
   "agent": {
     "plan": {
-      // No temperature: plan's pinned model (deepseek-v4-flash) is NOT one
+      // No temperature: plan's pinned model (deepseek-v4-flash-0731) is NOT one
       // opencode auto-injects a temperature for, so we leave its provider
       // default alone (DeepSeek reasoners want it). No steps cap either: long
       // autonomous runs must not be cut off mid-task — the plugin's budget
@@ -631,7 +631,7 @@ const ROLE_MODELS = {
   // 33/34 at 36 requests, 2026-07-14) was plan+build fully on deepseek —
   // best implementer, poor orchestrator (rule-following), so it lives here
   // and NOT in solo/auto. solo stays on qwen: 2-3x cheaper per task.
-  plan:       ["deepseek-v4-flash", "qwen3.5-122b-a10b"],
+  plan:       ["deepseek-v4-flash-0731", "qwen3.5-122b-a10b"],
   build:      ["qwen3-coder-next", "deepseek-v4-flash"],
   // Fix rounds run on a DIFFERENT model family to break correlated errors.
   coder2:     ["glm-4.7", "mistral-medium-3.5-128b"],

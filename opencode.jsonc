@@ -16,7 +16,7 @@
   },
   "agent": {
     "plan": {
-      // No temperature: plan's pinned model (deepseek-v4-flash) is NOT one
+      // No temperature: plan's pinned model (deepseek-v4-flash-0731) is NOT one
       // opencode auto-injects a temperature for, so we leave its provider
       // default alone (DeepSeek reasoners want it). No steps cap either: long
       // autonomous runs must not be cut off mid-task — the plugin's budget

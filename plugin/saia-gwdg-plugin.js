@@ -275,7 +275,7 @@ const ROLE_MODELS = {
   // 33/34 at 36 requests, 2026-07-14) was plan+build fully on deepseek —
   // best implementer, poor orchestrator (rule-following), so it lives here
   // and NOT in solo/auto. solo stays on qwen: 2-3x cheaper per task.
-  plan:       ["deepseek-v4-flash", "qwen3.5-122b-a10b"],
+  plan:       ["deepseek-v4-flash-0731", "qwen3.5-122b-a10b"],
   build:      ["qwen3-coder-next", "deepseek-v4-flash"],
   // Fix rounds run on a DIFFERENT model family to break correlated errors.
   coder2:     ["glm-4.7", "mistral-medium-3.5-128b"],
