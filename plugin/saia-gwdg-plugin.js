@@ -41,6 +41,11 @@ const MAX_CONSECUTIVE_5XX = 3;
 const PACER_LOG = join(homedir(), ".cache/opencode/saia-gwdg-pacer.log");
 const BUDGET_PATH = join(homedir(), ".cache/opencode/saia-gwdg-budget.json");
 const KEYS_PATH = join(homedir(), ".local/share/opencode/saia-gwdg-keys.json");
+// Reasoning-effort state, written by /effort (scripts/effort.sh). The pacer
+// re-reads it per request so a change applies to the CURRENT session without a
+// restart. Missing file => default effort (high).
+const EFFORT_PATH = join(homedir(), ".config/opencode/effort.json");
+const DEFAULT_EFFORT = "high";
 // How long an exhausted bucket keeps a key out of rotation before it is
 // optimistically retried (the true state is learned from the next headers).
 const RESET_TTL_MS = { hour: 60 * 60000, day: 24 * 3600000, month: 30 * 86400000 };
@@ -193,6 +198,52 @@ function installPacer(keys) {
     }
   };
 
+  // Reasoning-effort state, re-read per request so /effort applies to the
+  // current session immediately. Cached briefly to avoid a disk read on every
+  // request; the ~1s staleness is irrelevant for a user-toggled setting.
+  let effortCache = { level: DEFAULT_EFFORT, at: 0 };
+  const EFFORT_CACHE_MS = 1000;
+  const readEffort = () => {
+    if (Date.now() - effortCache.at < EFFORT_CACHE_MS) return effortCache.level;
+    let level = DEFAULT_EFFORT;
+    try {
+      const e = JSON.parse(readFileSync(EFFORT_PATH, "utf-8"));
+      if (["off", "high", "max"].includes(e?.level)) level = e.level;
+    } catch {}
+    effortCache = { level, at: Date.now() };
+    return level;
+  };
+
+  // Map the /effort level to the vLLM chat_template_kwargs SAIA expects.
+  // `off` turns thinking off; high/max enable thinking at that effort.
+  const effortKwargs = (level) => {
+    if (level === "off") return { thinking: false };
+    return { thinking: true, reasoning_effort: level };
+  };
+
+  // Inject chat_template_kwargs into the JSON body of a chat-completions
+  // request for reasoning-capable models. Returns a new init with the rewritten
+  // body, or the original init when nothing applies. `reasoningModels` is the
+  // set of model ids whose output advertises `thought`.
+  const withEffort = (input, init, url, reasoningModels) => {
+    if (!url.pathname.endsWith("/chat/completions")) return init;
+    let body = init?.body;
+    if (typeof body !== "string") return init;
+    let parsed;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      return init;
+    }
+    if (!parsed || typeof parsed.model !== "string") return init;
+    const baseId = parsed.model.includes("/") ? parsed.model.split("/").pop() : parsed.model;
+    if (!reasoningModels.has(baseId)) return init;
+    const level = readEffort();
+    parsed.chat_template_kwargs = effortKwargs(level);
+    pacerDebugLog(`effort=${level} injected for ${parsed.model}`);
+    return { ...init, body: JSON.stringify(parsed) };
+  };
+
   globalThis.fetch = (input, init) => {
     let url;
     try {
@@ -204,8 +255,10 @@ function installPacer(keys) {
 
     const run = queue.then(async () => {
       if (consecutive5xx >= MAX_CONSECUTIVE_5XX) {
+        pacerDebugLog(`cooldown: ${consecutive5xx} consecutive 5xx — sleeping 30s (head-of-line: queue blocked)`);
         await sleep(30_000);
         consecutive5xx = 0;
+        pacerDebugLog("cooldown: done, resuming queue");
       }
       let key = pickKey();
       if (key === null) throw allExhaustedError();
@@ -214,9 +267,27 @@ function installPacer(keys) {
         const wait = lastStart + MIN_INTERVAL_MS - Date.now();
         if (wait > 0) await sleep(wait);
         lastStart = Date.now();
-        const resp = await realFetch(...withAuth(input, init, k));
+        const reasoningModels = globalThis.__saiaReasoning ?? new Set();
+        const effInit = withEffort(input, init, url, reasoningModels);
+        const resp = await realFetch(...withAuth(input, effInit, k));
         readBuckets(resp, k);
         consecutive5xx = resp.status >= 500 ? consecutive5xx + 1 : 0;
+        // Evidence capture for the 500 investigation: body + the headers that
+        // drive client retry behavior. Cheap no-op unless SAIA_PACER_DEBUG=1.
+        if (resp.status >= 500 && process.env.SAIA_PACER_DEBUG === "1") {
+          let body = "";
+          try {
+            body = (await resp.clone().text()).replace(/\s+/g, " ").slice(0, 500);
+          } catch {}
+          let model = "";
+          try {
+            model = JSON.parse(init?.body)?.model || "";
+          } catch {}
+          pacerDebugLog(
+            `5xx ${resp.status} ${url.pathname} model=${model} consecutive=${consecutive5xx} ` +
+              `retry-after=${resp.headers.get("retry-after")} x-request-id=${resp.headers.get("x-request-id")} body=${body}`
+          );
+        }
         return resp;
       };
 
@@ -265,7 +336,7 @@ const ROLE_MODELS = {
   // Orchestrator: best rule-following per request; deepseek-v4-flash demoted
   // (ignores prompt rules under task pressure — verified 2026-07-13).
   // qwen3.5-397b-a17b dropped — its endpoint hangs (see researcher note below).
-  auto:       ["qwen3.5-122b-a10b", "deepseek-v4-flash"],
+  auto:       ["qwen3.5-122b-a10b", "deepseek-v4-flash-0731"],
   // Planning is the highest-leverage request in the chain. qwen3.5-397b was
   // removed entirely: its endpoint hung on 3 of 4 dispatches (2026-07-13/14),
   // stalling the whole chain — a "ready"-but-hanging model is worse than none.
@@ -276,13 +347,13 @@ const ROLE_MODELS = {
   // best implementer, poor orchestrator (rule-following), so it lives here
   // and NOT in solo/auto. solo stays on qwen: 2-3x cheaper per task.
   plan:       ["deepseek-v4-flash-0731", "qwen3.5-122b-a10b"],
-  build:      ["qwen3-coder-next", "deepseek-v4-flash"],
+  build:      ["qwen3-coder-next", "deepseek-v4-flash-0731"],
   // Fix rounds run on a DIFFERENT model family to break correlated errors.
   coder2:     ["glm-4.7", "mistral-medium-3.5-128b"],
   debugger:   ["qwen3-coder-next", "openai-gpt-oss-120b"],
   // Native opencode subagents (always shipped). general is a versatile
   // read+write helper; explore is read-only search — kept cheaper.
-  general:    ["deepseek-v4-flash", "qwen3-coder-next"],
+  general:    ["deepseek-v4-flash-0731", "qwen3-coder-next"],
   explore:    ["qwen3-coder-next", "qwen3.5-122b-a10b"],
   // devstral-2 is excluded everywhere: its SAIA chat template rejects
   // opencode's step-cap continuation ("Cannot set add_generation_prompt ...
@@ -432,14 +503,20 @@ export const server = async (_input) => {
       }
 
       config.provider["saia-gwdg"].models = {};
+      // Reasoning-capable model ids, exposed on the global so the pacer's
+      // per-request effort injection knows which models to apply it to.
+      const reasoningModels = new Set();
       for (const m of models) {
         if (m.status !== "ready") continue;
+        const reasoning = m.output?.includes("thought");
+        if (reasoning) reasoningModels.add(m.id);
         config.provider["saia-gwdg"].models[m.id] = {
           name: m.name,
           attachment: m.input?.some((t) => ["image", "audio", "video"].includes(t)),
-          reasoning: m.output?.includes("thought"),
+          reasoning,
         };
       }
+      globalThis.__saiaReasoning = reasoningModels;
 
       // Resolve each agent's model from ROLE_MODELS against the live list:
       // first preference that is ready wins, otherwise any ready model.

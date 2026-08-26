@@ -68,7 +68,7 @@ auth.json (API key, chmod 600, ~/.local/share/opencode/)
 plugin/saia-gwdg-plugin.js (auto-discovered; reads key, fetches models — cached ~7 days — assigns agent models)
     │
     ▼
-opencode.jsonc (provider + agents) + command/*.md (/usage, /reload_models) + prompts/ (via {file:./prompts/*.md})
+opencode.jsonc (provider + agents) + command/*.md (/usage, /reload_models, /effort) + prompts/ (via {file:./prompts/*.md})
     │
     ▼
 https://chat-ai.academiccloud.de/v1  (GWDG OpenAI-compatible API)

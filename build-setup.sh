@@ -17,8 +17,10 @@ MANIFEST=(
   yagni.md
   command/usage.md
   command/reload_models.md
+  command/effort.md
   scripts/usage.sh
   scripts/reload-models.sh
+  scripts/effort.sh
   prompts/auto.md
   prompts/coder.md
   prompts/debugger.md
@@ -263,10 +265,12 @@ pack plugin/saia-gwdg-plugin.js
 pack yagni.md
 pack command/usage.md
 pack command/reload_models.md
+pack command/effort.md
 
 # Real backing scripts for the commands (previously shipped as broken stubs).
 pack scripts/usage.sh
 pack scripts/reload-models.sh
+pack scripts/effort.sh
 
 # Agent prompts (cleanup_disabled_prompts removes disabled ones post-install;
 # coder2 reuses prompts/coder.md — there is no coder2.md).
@@ -540,7 +544,7 @@ verify() {
   fi
 }
 
-chmod 755 "$CONFIG_DIR/scripts/reload-models.sh" "$CONFIG_DIR/scripts/usage.sh"
+chmod 755 "$CONFIG_DIR/scripts/reload-models.sh" "$CONFIG_DIR/scripts/usage.sh" "$CONFIG_DIR/scripts/effort.sh"
 setup_auth_key
 setup_extra_keys
 filter_opencode_jsonc

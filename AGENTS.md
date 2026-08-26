@@ -11,9 +11,9 @@ The repo mirrors the installed `~/.config/opencode` layout using opencode's auto
 | File / dir | Purpose |
 |------------|---------|
 | `opencode.jsonc` | Main config: provider + inline agent definitions (plugin & commands are auto-discovered from their folders — no `plugin`/`command` entries) |
-| `plugin/saia-gwdg-plugin.js` | Runtime plugin (auto-discovered): live model list, request pacer, budget tracking, prompt injection |
-| `command/*.md` | Slash commands `/usage` and `/reload_models` (auto-discovered) |
-| `scripts/{usage,reload-models}.sh` | Backing shell scripts the commands invoke (referenced by absolute path) |
+| `plugin/saia-gwdg-plugin.js` | Runtime plugin (auto-discovered): live model list, request pacer (incl. reasoning-effort injection), budget tracking, prompt injection |
+| `command/*.md` | Slash commands `/usage`, `/reload_models`, `/effort` (auto-discovered) |
+| `scripts/{usage,reload-models,effort}.sh` | Backing shell scripts the commands invoke (referenced by absolute path) |
 | `prompts/` | Agent system prompts, via `{file:./prompts/*.md}`; the plugin also reads `../prompts/{auto,solo}.md` for budget injection |
 | `tool/`, `skill/` | Scaffolds (with READMEs) for future opencode custom tools / skills |
 | `yagni.md` | Global instruction appended to every agent (via `instructions`) |
@@ -64,6 +64,7 @@ When you press `Tab` to select `auto` and give it a task, it runs a 5-phase loop
 - **Request pacer**: the plugin wraps `fetch` for the SAIA host — spaces requests ≥2.1s apart (can't trip 30/min), retries a 429 once after the advertised reset, and rotates through the configured keys: it rewrites the `Authorization` header to the active key on every request, tracks each key's budget separately, and fails over to the next usable key when the active one hits the floor (≤5 hourly / ≤10 daily / ≤30 monthly remain) or 429s despite pacing; an exhausted key re-enters rotation after its bucket's reset TTL (hour 60 min / day 24 h / month 30 d). It aborts with a clear error only when ALL keys are exhausted, or after 3 consecutive 5xx responses (SAIA outages return 500s that still consume budget, and opencode would retry them forever). Writes per-key remaining-budget counts to `~/.cache/opencode/saia-gwdg-budget.json` after every response that carries rate-limit headers; at startup the plugin turns that snapshot into a LOW/HEALTHY/UNKNOWN status (hour/day/month summed across keys) injected into the `auto` and `solo` prompts via the `__SAIA_BUDGET_STATUS__` placeholder, and a `tool.execute.before` hook hard-refuses the first `task` call of a session when the aggregate budget is LOW (<40 hour / <50 day / <60 month; in-flight chains are never cut off; the pacer floors guard the tail). Set `SAIA_PACER_DEBUG=1` to log each request (with the active key label) to `~/.cache/opencode/saia-gwdg-pacer.log`
 - **Only ready models** are exposed (status check in plugin)
 - Plugin auto-detects model capabilities (attachment support, reasoning)
+- **Reasoning effort** (`/effort`, backed by `scripts/effort.sh`): the pacer injects `chat_template_kwargs: { thinking, reasoning_effort }` into the JSON body of `/v1/chat/completions` requests for **reasoning-capable models only** (those whose output advertises `thought`). The level is read from `~/.config/opencode/effort.json` (default `high` when missing) and re-read per request, so `/effort off|high|max` applies to the current session immediately — no restart. Non-reasoning models (e.g. `qwen3-coder-next`) are left untouched. Values map: `off` → `thinking:false`; `high`/`max` → `thinking:true` + `reasoning_effort`. Verify with `SAIA_PACER_DEBUG=1` (logs `effort=<level> injected for <model>`)
 - Plugin overrides each agent's model via `ROLE_MODELS` in `saia-gwdg-plugin.js`
 - Built-in agents (`build`, `plan`) remain available alongside custom agents
 - Native subagents (`general`, `explore`) are declared as stubs in `opencode.jsonc` and are **never** stripped by the installer's agent filter — so declining both primaries (`solo`/`auto`) still leaves `@general` and `@explore` available (each pinned to a SAIA model via the plugin's `ROLE_MODELS`)
@@ -75,6 +76,7 @@ opencode              # start session with default (build) agent
 opencode models       # list all available GWDG models (weekly cache)
 opencode providers    # show provider status
 ./scripts/reload-models.sh   # force-refresh the model cache (also /reload_models in-session)
+./scripts/effort.sh          # set reasoning effort for thinking models (also /effort in-session)
 ./build-setup.sh             # regenerate setup-saia-opencode.sh after config changes
 ```
 

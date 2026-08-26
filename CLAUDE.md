@@ -7,6 +7,7 @@ This file provides guidance to Claude Code when working with this opencode SAIA 
 - **Build command:** `./build-setup.sh` — regenerates `setup-saia-opencode.sh` after config changes
 - **Install:** `bash setup-saia-opencode.sh` (interactive prompts for agent selection) or `--yes`/`--solo`/`--auto` flags
 - **Model refresh:** `/reload_models` in opencode or `bash scripts/reload-models.sh`, then restart opencode
+- **Reasoning effort:** `/effort off|high|max` in opencode or `bash scripts/effort.sh` (applies to the current session immediately — the pacer re-reads the setting per request)
 
 ## Architecture
 
@@ -14,7 +15,7 @@ The repo uses opencode's auto-discovered folders (installed 1:1 into `~/.config/
 
 1. `opencode.jsonc` — static config (provider + inline agent definitions; no `plugin`/`command` blocks)
 2. `plugin/saia-gwdg-plugin.js` — runtime plugin, **auto-discovered** from `plugin/` (model list, budget tracking, prompt injection)
-3. `command/*.md` — slash commands (`/usage`, `/reload_models`), auto-discovered; backed by `scripts/*.sh`
+3. `command/*.md` — slash commands (`/usage`, `/reload_models`, `/effort`), auto-discovered; backed by `scripts/*.sh`
 4. `prompts/*.md` — agent system prompts (loaded at runtime)
 5. `tool/`, `skill/` — scaffolds for future custom tools / skills
 
