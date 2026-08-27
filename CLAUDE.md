@@ -7,7 +7,7 @@ This file provides guidance to Claude Code when working with this opencode SAIA 
 - **Build command:** `./build-setup.sh` — regenerates `setup-saia-opencode.sh` after config changes
 - **Install:** `bash setup-saia-opencode.sh` (interactive prompts for agent selection) or `--yes`/`--solo`/`--auto` flags
 - **Model refresh:** `/reload_models` in opencode or `bash scripts/reload-models.sh`, then restart opencode
-- **Reasoning effort:** `/effort off|high|max` in opencode or `bash scripts/effort.sh` (applies to the current session immediately — the pacer re-reads the setting per request)
+- **Reasoning effort:** `/effort off|low|medium|high|max` in opencode or `bash scripts/effort.sh` (applies to the current session immediately — the pacer re-reads the setting per request)
 
 ## Architecture
 

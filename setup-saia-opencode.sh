@@ -2,7 +2,7 @@
 #
 # setup-saia-opencode.sh — GENERATED FILE, DO NOT EDIT.
 # Regenerate with: ./build-setup.sh  (in the opencode config repo)
-# Source: opencode-config commit eca4313-dirty, packed 2026-08-26T14:52:46Z
+# Source: opencode-config commit 792af53-dirty, packed 2026-08-27T07:54:23Z
 #
 # Installs the GWDG SAIA setup for opencode: provider + plugin, and optional
 # agents (solo, auto, coder, coder2, researcher, debugger) with their prompts.
@@ -564,7 +564,7 @@ function installPacer(keys) {
     let level = DEFAULT_EFFORT;
     try {
       const e = JSON.parse(readFileSync(EFFORT_PATH, "utf-8"));
-      if (["off", "high", "max"].includes(e?.level)) level = e.level;
+      if (["off", "low", "medium", "high", "max"].includes(e?.level)) level = e.level;
     } catch {}
     effortCache = { level, at: Date.now() };
     return level;
@@ -575,6 +575,73 @@ function installPacer(keys) {
   const effortKwargs = (level) => {
     if (level === "off") return { thinking: false };
     return { thinking: true, reasoning_effort: level };
+  };
+
+  // Local-echo short-circuit: command/effort.md starts with this sentinel
+  // line. Slash commands are prompt templates — opencode always sends the
+  // expanded text to the model, which would just echo the script output back
+  // (1 SAIA request + latency for nothing). When the outgoing request's last
+  // message carries the sentinel, answer it locally with the script output
+  // instead: instant, zero SAIA requests, skips queue/pacer entirely.
+  const LOCAL_ECHO_SENTINEL = "(local command — handled without a model call)";
+  const tryLocalEcho = (init, url) => {
+    if (!url.pathname.endsWith("/chat/completions")) return null;
+    let body;
+    try {
+      body = JSON.parse(init?.body);
+    } catch {
+      return null;
+    }
+    const last = body?.messages?.[body.messages.length - 1];
+    if (!last) return null;
+    const text =
+      typeof last.content === "string"
+        ? last.content
+        : Array.isArray(last.content)
+          ? last.content.map((p) => p?.text ?? "").join("")
+          : "";
+    if (!text.includes(LOCAL_ECHO_SENTINEL)) return null;
+    const echo = text
+      .split("\n")
+      .filter((line) => !line.includes(LOCAL_ECHO_SENTINEL))
+      .join("\n")
+      .trim();
+    pacerDebugLog("local echo for /effort — no SAIA request");
+    const id = "chatcmpl-local-echo";
+    const created = Math.floor(Date.now() / 1000);
+    const usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+    if (body.stream) {
+      const chunk = (delta, finish, extra) =>
+        `data: ${JSON.stringify({
+          id,
+          object: "chat.completion.chunk",
+          created,
+          model: body.model,
+          choices: [{ index: 0, delta, finish_reason: finish }],
+          ...extra,
+        })}\n\n`;
+      const sse =
+        chunk({ role: "assistant", content: echo }, null) +
+        chunk({}, "stop", { usage }) +
+        "data: [DONE]\n\n";
+      return new Response(sse, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }
+    return new Response(
+      JSON.stringify({
+        id,
+        object: "chat.completion",
+        created,
+        model: body.model,
+        choices: [
+          { index: 0, message: { role: "assistant", content: echo }, finish_reason: "stop" },
+        ],
+        usage,
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
   };
 
   // Inject chat_template_kwargs into the JSON body of a chat-completions
@@ -608,6 +675,9 @@ function installPacer(keys) {
       return realFetch(input, init);
     }
     if (url.hostname !== SAIA_HOST) return realFetch(input, init);
+
+    const local = tryLocalEcho(init, url);
+    if (local) return Promise.resolve(local);
 
     const run = queue.then(async () => {
       if (consecutive5xx >= MAX_CONSECUTIVE_5XX) {
@@ -969,11 +1039,11 @@ __OC_FILE_EOF__
 
 write_file "command/effort.md" <<'__OC_FILE_EOF__'
 ---
-description: Set reasoning effort for thinking models (off|high|max; no arg shows current)
+description: Set reasoning effort for thinking models (off|low|medium|high|max; no arg shows current)
 ---
-Run this exact command with the bash tool and report its output verbatim: bash "${XDG_CONFIG_HOME:-$HOME/.config}/opencode/scripts/effort.sh" $ARGUMENTS
+(local command — handled without a model call)
 
-The change applies to the current session immediately (no restart needed). Report the script's output verbatim, and nothing else. Requires bash permission — run from the solo or build agent, not auto.
+!`bash "${XDG_CONFIG_HOME:-$HOME/.config}/opencode/scripts/effort.sh" "$ARGUMENTS"`
 __OC_FILE_EOF__
 
 write_file "scripts/usage.sh" <<'__OC_FILE_EOF__'
@@ -1193,38 +1263,52 @@ write_file "scripts/effort.sh" <<'__OC_FILE_EOF__'
 # Usage:
 #   effort.sh            print the current level
 #   effort.sh off        disable thinking (chat_template_kwargs.thinking=false)
-#   effort.sh high       thinking on, reasoning_effort="high"
-#   effort.sh max        thinking on, reasoning_effort="max"
+#   effort.sh LEVEL      thinking on, reasoning_effort=LEVEL (low|medium|high|max)
 #
-set -euo pipefail
+# Invoked via !`...` injection from command/effort.md: only stdout reaches the
+# prompt there, so errors go to stdout and every path exits 0.
+set -uo pipefail
 
 EFFORT_FILE="$HOME/.config/opencode/effort.json"
 DEFAULT="high"
+LEVELS=(off low medium high max)
 
 mkdir -p "$(dirname "$EFFORT_FILE")"
 
 current() {
+  local level=""
   if [[ -f "$EFFORT_FILE" ]]; then
-    python3 -c "import json,sys; print(json.load(open('$EFFORT_FILE')).get('level','$DEFAULT'))" 2>/dev/null \
-      || echo "$DEFAULT"
-  else
-    echo "$DEFAULT"
+    level=$(sed -n 's/.*"level": *"\([^"]*\)".*/\1/p' "$EFFORT_FILE" 2>/dev/null | head -1)
   fi
+  case " ${LEVELS[*]} " in
+    *" $level "*) echo "$level" ;;
+    *) echo "$DEFAULT" ;;
+  esac
+}
+
+ladder() {
+  local cur out=""
+  cur=$(current)
+  for l in "${LEVELS[@]}"; do
+    if [[ "$l" == "$cur" ]]; then out+="[$l]  "; else out+="$l  "; fi
+  done
+  echo "Reasoning effort: ${out% } (default: $DEFAULT)"
 }
 
 ARG="${1:-}"
 
 if [[ -z "$ARG" || "$ARG" == "?" || "$ARG" == "show" ]]; then
-  echo "Reasoning effort: $(current) (default: $DEFAULT)"
-  echo "Set with: effort.sh off|high|max"
+  ladder
+  echo "Set with: /effort off|low|medium|high|max"
   exit 0
 fi
 
-case "$ARG" in
-  off|high|max) ;;
+case " ${LEVELS[*]} " in
+  *" $ARG "*) ;;
   *)
-    echo "ERROR: invalid effort '$ARG' — use off|high|max (or no arg to show current)" >&2
-    exit 1
+    echo "Invalid effort '$ARG' — use off|low|medium|high|max (or no arg to show current)."
+    ladder
+    exit 0
     ;;
 esac
 

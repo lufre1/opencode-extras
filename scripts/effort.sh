@@ -9,38 +9,52 @@
 # Usage:
 #   effort.sh            print the current level
 #   effort.sh off        disable thinking (chat_template_kwargs.thinking=false)
-#   effort.sh high       thinking on, reasoning_effort="high"
-#   effort.sh max        thinking on, reasoning_effort="max"
+#   effort.sh LEVEL      thinking on, reasoning_effort=LEVEL (low|medium|high|max)
 #
-set -euo pipefail
+# Invoked via !`...` injection from command/effort.md: only stdout reaches the
+# prompt there, so errors go to stdout and every path exits 0.
+set -uo pipefail
 
 EFFORT_FILE="$HOME/.config/opencode/effort.json"
 DEFAULT="high"
+LEVELS=(off low medium high max)
 
 mkdir -p "$(dirname "$EFFORT_FILE")"
 
 current() {
+  local level=""
   if [[ -f "$EFFORT_FILE" ]]; then
-    python3 -c "import json,sys; print(json.load(open('$EFFORT_FILE')).get('level','$DEFAULT'))" 2>/dev/null \
-      || echo "$DEFAULT"
-  else
-    echo "$DEFAULT"
+    level=$(sed -n 's/.*"level": *"\([^"]*\)".*/\1/p' "$EFFORT_FILE" 2>/dev/null | head -1)
   fi
+  case " ${LEVELS[*]} " in
+    *" $level "*) echo "$level" ;;
+    *) echo "$DEFAULT" ;;
+  esac
+}
+
+ladder() {
+  local cur out=""
+  cur=$(current)
+  for l in "${LEVELS[@]}"; do
+    if [[ "$l" == "$cur" ]]; then out+="[$l]  "; else out+="$l  "; fi
+  done
+  echo "Reasoning effort: ${out% } (default: $DEFAULT)"
 }
 
 ARG="${1:-}"
 
 if [[ -z "$ARG" || "$ARG" == "?" || "$ARG" == "show" ]]; then
-  echo "Reasoning effort: $(current) (default: $DEFAULT)"
-  echo "Set with: effort.sh off|high|max"
+  ladder
+  echo "Set with: /effort off|low|medium|high|max"
   exit 0
 fi
 
-case "$ARG" in
-  off|high|max) ;;
+case " ${LEVELS[*]} " in
+  *" $ARG "*) ;;
   *)
-    echo "ERROR: invalid effort '$ARG' — use off|high|max (or no arg to show current)" >&2
-    exit 1
+    echo "Invalid effort '$ARG' — use off|low|medium|high|max (or no arg to show current)."
+    ladder
+    exit 0
     ;;
 esac
 

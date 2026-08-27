@@ -49,14 +49,18 @@ relative to `plugin/`, and `{file:./prompts/*.md}` resolves relative to `opencod
 **`command/` + `scripts/` — slash commands and their backing scripts.** `command/*.md` are
 auto-discovered slash commands (`/usage`, `/reload_models`, `/effort`). The markdown is thin: it
 carries a `description` plus a one-line directive that runs the backing script — inline for
-`usage.md`, via the bash tool for `reload_models.md` and `effort.md`. The real work lives in
+`usage.md` and `effort.md`, via the bash tool for `reload_models.md`. The real work lives in
 `scripts/*.sh` (`usage.sh`, `reload-models.sh`, `effort.sh`), installed to
 `~/.config/opencode/scripts/`.
 
 `/effort` (backed by `scripts/effort.sh`) sets the SAIA reasoning effort for thinking models:
-`/effort off|high|max` writes `~/.config/opencode/effort.json`, and the plugin's pacer
-re-reads that file per request, so the change applies to the current session immediately —
-no restart. Default (no file) is `high`.
+`/effort off|low|medium|high|max` writes `~/.config/opencode/effort.json`, and the plugin's
+pacer re-reads that file per request, so the change applies to the current session immediately —
+no restart. Default (no file) is `high`. No arg shows the current level. Runs via inline
+`` !`…` `` injection at command time, so it needs no bash permission and works from any agent.
+The plugin answers the command locally (the template's sentinel line short-circuits the
+outgoing chat request), so `/effort` is instant and costs zero SAIA requests; only if the
+plugin is missing does the expanded template fall through to the model.
 
 **`tool/` — custom-tool scaffold (currently empty but for its README).** opencode
 auto-discovers `*.js`/`*.ts` at the folder root and uses the filename as the tool name;
