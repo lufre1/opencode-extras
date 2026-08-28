@@ -2,7 +2,7 @@
 #
 # setup-saia-opencode.sh — GENERATED FILE, DO NOT EDIT.
 # Regenerate with: ./build-setup.sh  (in the opencode config repo)
-# Source: opencode-config commit 497b434-dirty, packed 2026-08-28T07:39:47Z
+# Source: opencode-config commit 1d91a98-dirty, packed 2026-08-28T11:05:22Z
 #
 # Installs the GWDG SAIA setup for opencode: provider + plugin, and optional
 # agents (solo, auto, coder, coder2, researcher, debugger) with their prompts.
@@ -200,7 +200,15 @@ write_file "opencode.jsonc" <<'__OC_FILE_EOF__'
     "saia-gwdg": {
       "npm": "@ai-sdk/openai-compatible",
       "options": {
-        "baseURL": "https://chat-ai.academiccloud.de/v1"
+        "baseURL": "https://chat-ai.academiccloud.de/v1",
+        // SAIA replicas sometimes open a stream and then stop sending. No
+        // chunk for 60s means the replica is dead — abort so opencode can
+        // retry instead of hanging forever. Deliberately no `timeout` /
+        // `headerTimeout`: opencode measures those around the plugin's patched
+        // fetch, so they would include the pacer's own queue and cooldown
+        // waits and fire spuriously. The headers case is handled in the plugin
+        // (SAIA_TIMEOUT_MS), where only real network time is measured.
+        "chunkTimeout": 60000
       }
     }
   },
@@ -357,7 +365,7 @@ write_file "opencode.jsonc" <<'__OC_FILE_EOF__'
 __OC_FILE_EOF__
 
 write_file "plugin/saia-gwdg-plugin.js" <<'__OC_FILE_EOF__'
-import { readFileSync, writeFileSync, mkdirSync, appendFileSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync, appendFileSync, statSync, renameSync } from "fs";
 import { homedir } from "os";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -397,6 +405,15 @@ const HOUR_FLOOR = 5;
 const DAY_FLOOR = 10;
 const MONTH_FLOOR = 30;
 const MAX_CONSECUTIVE_5XX = 3;
+// Hard cap on a single network call. SAIA replicas can accept the connection
+// and then send nothing at all, which used to freeze opencode forever (there
+// is no default timeout in @ai-sdk/openai-compatible). Applied around the
+// realFetch call only, so the pacer's own queue/cooldown waits don't count
+// toward it. SAIA_TIMEOUT_MS is the calibration knob.
+const TIMEOUT_MS = Number(process.env.SAIA_TIMEOUT_MS) || 60_000;
+// Connection attempts per request (1 = no reconnect). Only connection-level
+// failures are retried here; 5xx and 429 are opencode's job.
+const MAX_CONNECT_TRIES = 2;
 const PACER_LOG = join(homedir(), ".cache/opencode/saia-gwdg-pacer.log");
 const BUDGET_PATH = join(homedir(), ".cache/opencode/saia-gwdg-budget.json");
 const KEYS_PATH = join(homedir(), ".local/share/opencode/saia-gwdg-keys.json");
@@ -410,11 +427,17 @@ const DEFAULT_EFFORT = "high";
 const RESET_TTL_MS = { hour: 60 * 60000, day: 24 * 3600000, month: 30 * 86400000 };
 
 // Debug trail for everything the plugin decides (requests, cache hits,
-// prompt injection). Only active with SAIA_PACER_DEBUG=1.
+// prompt injection). Always on: the failures worth catching are rare and
+// silent, and an env var set in ~/.bashrc is not inherited by a desktop or
+// IDE launch. SAIA_PACER_DEBUG=1 additionally enables the 5xx body capture.
 const pacerDebugLog = (line) => {
-  if (process.env.SAIA_PACER_DEBUG !== "1") return;
   try {
     mkdirSync(dirname(PACER_LOG), { recursive: true });
+    // ponytail: single-generation rotation, good enough for a ~150B/request
+    // append-only trail. Use logrotate if this ever needs real history.
+    try {
+      if (statSync(PACER_LOG).size > 8e6) renameSync(PACER_LOG, `${PACER_LOG}.1`);
+    } catch {}
     appendFileSync(PACER_LOG, `${new Date().toISOString()} ${line}\n`);
   } catch {}
 };
@@ -513,11 +536,14 @@ function installPacer(keys) {
   // NOTE: when both a Request object and an init are passed, init.headers
   // wins in fetch() — so the rewrite must always land on the init side
   // (rewriting only the Request would silently keep the old key).
-  const withAuth = (input, init, key) => {
+  const withAuth = (input, init, key, reqId) => {
     const base =
       init?.headers ?? (typeof Request !== "undefined" && input instanceof Request ? input.headers : undefined);
     const headers = new Headers(base);
     headers.set("authorization", `Bearer ${key}`);
+    // A hang yields no response, so no x-kong-request-id ever comes back. This
+    // is the only ID that exists for the failure mode we most need to report.
+    headers.set("x-client-request-id", reqId);
     return [input, { ...init, headers }];
   };
 
@@ -689,6 +715,13 @@ function installPacer(keys) {
     const local = tryLocalEcho(init, url);
     if (local) return Promise.resolve(local);
 
+    const enqueuedAt = Date.now();
+    const reqId = crypto.randomUUID();
+    let model = "";
+    try {
+      model = JSON.parse(init?.body)?.model || "";
+    } catch {}
+
     const run = queue.then(async () => {
       if (consecutive5xx >= MAX_CONSECUTIVE_5XX) {
         pacerDebugLog(`cooldown: ${consecutive5xx} consecutive 5xx — sleeping 30s (head-of-line: queue blocked)`);
@@ -705,26 +738,62 @@ function installPacer(keys) {
         lastStart = Date.now();
         const reasoningModels = globalThis.__saiaReasoning ?? new Set();
         const effInit = withEffort(input, init, url, reasoningModels);
-        const resp = await realFetch(...withAuth(input, effInit, k));
-        readBuckets(resp, k);
-        consecutive5xx = resp.status >= 500 ? consecutive5xx + 1 : 0;
-        // Evidence capture for the 500 investigation: body + the headers that
-        // drive client retry behavior. Cheap no-op unless SAIA_PACER_DEBUG=1.
-        if (resp.status >= 500 && process.env.SAIA_PACER_DEBUG === "1") {
-          let body = "";
-          try {
-            body = (await resp.clone().text()).replace(/\s+/g, " ").slice(0, 500);
-          } catch {}
-          let model = "";
-          try {
-            model = JSON.parse(init?.body)?.model || "";
-          } catch {}
+        // One reconnect on a connection-level failure. opencode retries 5xx and
+        // 429 for us, but the AI SDK classifies an abort as user cancellation,
+        // so a timed-out or dropped connection gets exactly one shot and
+        // surfaces as a hard error. SAIA's defect is a bad *replica*, and a
+        // fresh connection is re-load-balanced — so retrying here is what
+        // actually recovers. The caller's own abort is never retried.
+        for (let tryNo = 1; ; tryNo++) {
+          // Timeout wraps only the network call, so queue wait, 2100ms spacing,
+          // the 30s cooldown and the 429 sleeps can't trigger a false abort.
+          // AbortSignal.any keeps opencode's own cancellation working.
+          const timeout = AbortSignal.timeout(TIMEOUT_MS);
+          const signal = effInit?.signal ? AbortSignal.any([effInit.signal, timeout]) : timeout;
           pacerDebugLog(
-            `5xx ${resp.status} ${url.pathname} model=${model} consecutive=${consecutive5xx} ` +
-              `retry-after=${resp.headers.get("retry-after")} x-request-id=${resp.headers.get("x-request-id")} body=${body}`
+            `req ${url.pathname} model=${model} ${label(k)} id=${reqId} try=${tryNo} queued=${Date.now() - enqueuedAt}ms`
           );
+          const startedAt = Date.now();
+          let resp;
+          try {
+            resp = await realFetch(...withAuth(input, { ...effInit, signal }, k, reqId));
+          } catch (e) {
+            // The line that did not exist before: a hung or dropped connection
+            // used to leave no trace anywhere. This is the report evidence.
+            const retrying = !effInit?.signal?.aborted && tryNo < MAX_CONNECT_TRIES;
+            pacerDebugLog(
+              `fail ${e?.name ?? "Error"} ${url.pathname} model=${model} ${label(k)} id=${reqId} try=${tryNo} ` +
+                `after=${Date.now() - startedAt}ms timeout=${TIMEOUT_MS}ms retrying=${retrying} ` +
+                `msg=${String(e?.message ?? e).replace(/\s+/g, " ").slice(0, 200)}`
+            );
+            if (retrying) continue;
+            throw e;
+          }
+          const ttfb = Date.now() - startedAt;
+          readBuckets(resp, k);
+          consecutive5xx = resp.status >= 500 ? consecutive5xx + 1 : 0;
+          const s = stateFor(k);
+          // kong id is emitted on every response, not just failures: GWDG needs a
+          // healthy baseline to diff a bad request against.
+          pacerDebugLog(
+            `resp ${resp.status} ${url.pathname} model=${model} ${label(k)} id=${reqId} try=${tryNo} ttfb=${ttfb}ms ` +
+              `kong=${resp.headers.get("x-kong-request-id")} upstream=${resp.headers.get("x-kong-upstream-latency")}ms ` +
+              `remaining=${s.remaining.minute}/min ${s.remaining.hour}/hour ${s.remaining.day}/day`
+          );
+          // Extra evidence for the 500 investigation: body + retry-after. The
+          // body read is the only part expensive enough to keep behind the env var.
+          if (resp.status >= 500 && process.env.SAIA_PACER_DEBUG === "1") {
+            let body = "";
+            try {
+              body = (await resp.clone().text()).replace(/\s+/g, " ").slice(0, 500);
+            } catch {}
+            pacerDebugLog(
+              `5xx-detail ${resp.status} id=${reqId} consecutive=${consecutive5xx} ` +
+                `retry-after=${resp.headers.get("retry-after")} body=${body}`
+            );
+          }
+          return resp;
         }
-        return resp;
       };
 
       let resp = await attempt(key);
@@ -750,10 +819,6 @@ function installPacer(keys) {
           }
         }
       }
-      const s = stateFor(key);
-      pacerDebugLog(
-        `${resp.status} ${url.pathname} ${label(key)} remaining=${s.remaining.minute}/min ${s.remaining.hour}/hour ${s.remaining.day}/day`
-      );
       return resp;
     });
 

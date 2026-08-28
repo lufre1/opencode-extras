@@ -10,7 +10,15 @@
     "saia-gwdg": {
       "npm": "@ai-sdk/openai-compatible",
       "options": {
-        "baseURL": "https://chat-ai.academiccloud.de/v1"
+        "baseURL": "https://chat-ai.academiccloud.de/v1",
+        // SAIA replicas sometimes open a stream and then stop sending. No
+        // chunk for 60s means the replica is dead — abort so opencode can
+        // retry instead of hanging forever. Deliberately no `timeout` /
+        // `headerTimeout`: opencode measures those around the plugin's patched
+        // fetch, so they would include the pacer's own queue and cooldown
+        // waits and fire spuriously. The headers case is handled in the plugin
+        // (SAIA_TIMEOUT_MS), where only real network time is measured.
+        "chunkTimeout": 60000
       }
     }
   },
