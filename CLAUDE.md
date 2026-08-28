@@ -9,7 +9,7 @@ This file provides guidance to Claude Code when working with this opencode SAIA 
 - **Model refresh:** `/reload_models` in opencode or `bash scripts/reload-models.sh`, then restart opencode
 - **Reasoning effort:** `/effort off|low|medium|high|max` in opencode or `bash scripts/effort.sh` (applies to the current session immediately — the pacer re-reads the setting per request)
 - **Request log:** `~/.cache/opencode/saia-gwdg-pacer.log` — always on, one `req`/`resp` (or `fail`) line per SAIA request. `SAIA_PACER_DEBUG=1` additionally captures 5xx response bodies.
-- **Network timeout:** `SAIA_TIMEOUT_MS` (default 60000) — hard cap on a single SAIA network call; the plugin reconnects once (`MAX_CONNECT_TRIES`) before giving up
+- **Network timeout:** `SAIA_TIMEOUT_MS` (default 60000, floor 5000 — lower values clamped) — hard cap on a single SAIA network call; the plugin reconnects once (`MAX_CONNECT_TRIES`) before giving up
 
 ## Architecture
 

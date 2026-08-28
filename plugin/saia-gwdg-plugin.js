@@ -43,7 +43,9 @@ const MAX_CONSECUTIVE_5XX = 3;
 // is no default timeout in @ai-sdk/openai-compatible). Applied around the
 // realFetch call only, so the pacer's own queue/cooldown waits don't count
 // toward it. SAIA_TIMEOUT_MS is the calibration knob.
-const TIMEOUT_MS = Number(process.env.SAIA_TIMEOUT_MS) || 60_000;
+// Floor 5s: a sub-second value can only be a leftover test export, and it
+// kills every request. Edit the constant directly for fault-injection tests.
+const TIMEOUT_MS = Math.max(Number(process.env.SAIA_TIMEOUT_MS) || 60_000, 5_000);
 // Connection attempts per request (1 = no reconnect). Only connection-level
 // failures are retried here; 5xx and 429 are opencode's job.
 const MAX_CONNECT_TRIES = 2;
@@ -609,7 +611,7 @@ export const server = async (_input) => {
         }
       } catch {}
       installPacer(keys);
-      pacerDebugLog(`pacer: ${keys.length} SAIA key(s) in rotation`);
+      pacerDebugLog(`pacer: ${keys.length} SAIA key(s) in rotation, timeout=${TIMEOUT_MS}ms`);
 
       let cached;
       try {
