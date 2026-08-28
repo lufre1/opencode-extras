@@ -8,7 +8,7 @@
 #
 # Usage:
 #   effort.sh            print the current level
-#   effort.sh off        disable thinking (chat_template_kwargs.thinking=false)
+#   effort.sh off        disable thinking (chat_template_kwargs.enable_thinking=false)
 #   effort.sh LEVEL      thinking on, reasoning_effort=LEVEL (low|medium|high|max)
 #
 # Invoked via !`...` injection from command/effort.md: only stdout reaches the

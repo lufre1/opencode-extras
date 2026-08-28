@@ -2,7 +2,7 @@
 #
 # setup-saia-opencode.sh — GENERATED FILE, DO NOT EDIT.
 # Regenerate with: ./build-setup.sh  (in the opencode config repo)
-# Source: opencode-config commit 792af53-dirty, packed 2026-08-27T07:54:23Z
+# Source: opencode-config commit 497b434-dirty, packed 2026-08-28T07:39:47Z
 #
 # Installs the GWDG SAIA setup for opencode: provider + plugin, and optional
 # agents (solo, auto, coder, coder2, researcher, debugger) with their prompts.
@@ -206,18 +206,21 @@ write_file "opencode.jsonc" <<'__OC_FILE_EOF__'
   },
   "agent": {
     "plan": {
-      // No temperature: plan's pinned model (deepseek-v4-flash-0731) is NOT one
-      // opencode auto-injects a temperature for, so we leave its provider
-      // default alone (DeepSeek reasoners want it). No steps cap either: long
-      // autonomous runs must not be cut off mid-task — the plugin's budget
-      // pacer is the runaway guard.
+      // No temperature: opencode's own default (`ke.temperature`) returns
+      // nothing for SAIA models, so omitting it leaves the provider default
+      // alone (DeepSeek reasoners want it). Note opencode DOES inject
+      // top_p 0.95 here regardless — topP is not capability-gated. No steps
+      // cap either: long autonomous runs must not be cut off mid-task — the
+      // plugin's budget pacer is the runaway guard.
       "color": "warning"
     },
     // Stub so the plugin's ROLE_MODELS can pin the built-in build agent's
     // model (the plugin skips roles absent from config.agent).
-    // temperature 0.2: build's pinned model (qwen3-coder-next) IS one opencode
-    // auto-injects a temperature for (0.55); 0.2 overrides it to match @coder
-    // for deterministic implementation. No steps cap, same reason as plan.
+    // temperature 0.2: an explicit choice, not an override — opencode injects
+    // no temperature for these models. Matches @coder for deterministic
+    // implementation. Only reaches the wire because the plugin declares
+    // `temperature: true` per model; without that opencode drops the field.
+    // No steps cap, same reason as plan.
     "build": {
       "temperature": 0.2
     },
@@ -571,10 +574,14 @@ function installPacer(keys) {
   };
 
   // Map the /effort level to the vLLM chat_template_kwargs SAIA expects.
-  // `off` turns thinking off; high/max enable thinking at that effort.
+  // `off` turns thinking off; every other level enables thinking at that effort.
+  // The key is `enable_thinking`, the Qwen/vLLM chat-template variable — a plain
+  // `thinking` key is silently ignored by the template (verified on-wire
+  // 2026-08-28: `{thinking:false}` left reasoning output untouched, while
+  // `{enable_thinking:false}` drove it to zero on every model tested).
   const effortKwargs = (level) => {
-    if (level === "off") return { thinking: false };
-    return { thinking: true, reasoning_effort: level };
+    if (level === "off") return { enable_thinking: false };
+    return { enable_thinking: true, reasoning_effort: level };
   };
 
   // Local-echo short-circuit: command/effort.md starts with this sentinel
@@ -662,8 +669,11 @@ function installPacer(keys) {
     const baseId = parsed.model.includes("/") ? parsed.model.split("/").pop() : parsed.model;
     if (!reasoningModels.has(baseId)) return init;
     const level = readEffort();
-    parsed.chat_template_kwargs = effortKwargs(level);
-    pacerDebugLog(`effort=${level} injected for ${parsed.model}`);
+    const mapped = EFFORT_ALIAS[baseId]?.[level] ?? level;
+    parsed.chat_template_kwargs = effortKwargs(mapped);
+    pacerDebugLog(
+      `effort=${level}${mapped !== level ? `->${mapped}` : ""} injected for ${parsed.model}`
+    );
     return { ...init, body: JSON.stringify(parsed) };
   };
 
@@ -752,6 +762,25 @@ function installPacer(keys) {
     return run;
   };
 }
+
+// SAIA's /v1/models under-reports these: they return a populated `reasoning`
+// field but advertise output: ["text"] with no "thought". Verified 2026-08-28 by
+// probing all 16 ready models — 3 false negatives, no false positives. Without
+// this the effort gate skips them entirely (openai-gpt-oss-120b is debugger's
+// live fallback below, so it was silently uncontrolled).
+const FORCE_REASONING = new Set([
+  "qwen3.6-35b-a3b",
+  "qwen3.8-27b",
+  "openai-gpt-oss-120b",
+]);
+
+// Models whose chat template accepts a non-standard effort ladder. Anything not
+// listed here passes through unchanged. qwen3.8-27b returns HTTP 400 on high and
+// max ("Supported types are xhigh (default), medium, and low"), so both map to
+// its own top rung. `off` is never remapped — every model accepts it.
+const EFFORT_ALIAS = {
+  "qwen3.8-27b": { high: "xhigh", max: "xhigh" },
+};
 
 // Preferred model per agent role, best first. The plugin picks the first entry
 // that SAIA currently reports as `ready`; if none are ready it falls back to any
@@ -934,12 +963,18 @@ export const server = async (_input) => {
       const reasoningModels = new Set();
       for (const m of models) {
         if (m.status !== "ready") continue;
-        const reasoning = m.output?.includes("thought");
+        const reasoning = m.output?.includes("thought") || FORCE_REASONING.has(m.id);
         if (reasoning) reasoningModels.add(m.id);
         config.provider["saia-gwdg"].models[m.id] = {
           name: m.name,
           attachment: m.input?.some((t) => ["image", "audio", "video"].includes(t)),
           reasoning,
+          // Required for ANY temperature to reach the wire: opencode gates the
+          // field on `model.capabilities.temperature`, so without this every
+          // agent temperature in opencode.jsonc is silently dropped (verified
+          // on-wire, opencode 211.18.23). SAIA models are all OpenAI-compatible
+          // completions endpoints, so temperature is always supported.
+          temperature: true,
         };
       }
       globalThis.__saiaReasoning = reasoningModels;
@@ -1262,7 +1297,7 @@ write_file "scripts/effort.sh" <<'__OC_FILE_EOF__'
 #
 # Usage:
 #   effort.sh            print the current level
-#   effort.sh off        disable thinking (chat_template_kwargs.thinking=false)
+#   effort.sh off        disable thinking (chat_template_kwargs.enable_thinking=false)
 #   effort.sh LEVEL      thinking on, reasoning_effort=LEVEL (low|medium|high|max)
 #
 # Invoked via !`...` injection from command/effort.md: only stdout reaches the

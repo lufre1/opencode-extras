@@ -215,10 +215,14 @@ function installPacer(keys) {
   };
 
   // Map the /effort level to the vLLM chat_template_kwargs SAIA expects.
-  // `off` turns thinking off; high/max enable thinking at that effort.
+  // `off` turns thinking off; every other level enables thinking at that effort.
+  // The key is `enable_thinking`, the Qwen/vLLM chat-template variable — a plain
+  // `thinking` key is silently ignored by the template (verified on-wire
+  // 2026-08-28: `{thinking:false}` left reasoning output untouched, while
+  // `{enable_thinking:false}` drove it to zero on every model tested).
   const effortKwargs = (level) => {
-    if (level === "off") return { thinking: false };
-    return { thinking: true, reasoning_effort: level };
+    if (level === "off") return { enable_thinking: false };
+    return { enable_thinking: true, reasoning_effort: level };
   };
 
   // Local-echo short-circuit: command/effort.md starts with this sentinel
@@ -306,8 +310,11 @@ function installPacer(keys) {
     const baseId = parsed.model.includes("/") ? parsed.model.split("/").pop() : parsed.model;
     if (!reasoningModels.has(baseId)) return init;
     const level = readEffort();
-    parsed.chat_template_kwargs = effortKwargs(level);
-    pacerDebugLog(`effort=${level} injected for ${parsed.model}`);
+    const mapped = EFFORT_ALIAS[baseId]?.[level] ?? level;
+    parsed.chat_template_kwargs = effortKwargs(mapped);
+    pacerDebugLog(
+      `effort=${level}${mapped !== level ? `->${mapped}` : ""} injected for ${parsed.model}`
+    );
     return { ...init, body: JSON.stringify(parsed) };
   };
 
@@ -396,6 +403,25 @@ function installPacer(keys) {
     return run;
   };
 }
+
+// SAIA's /v1/models under-reports these: they return a populated `reasoning`
+// field but advertise output: ["text"] with no "thought". Verified 2026-08-28 by
+// probing all 16 ready models — 3 false negatives, no false positives. Without
+// this the effort gate skips them entirely (openai-gpt-oss-120b is debugger's
+// live fallback below, so it was silently uncontrolled).
+const FORCE_REASONING = new Set([
+  "qwen3.6-35b-a3b",
+  "qwen3.8-27b",
+  "openai-gpt-oss-120b",
+]);
+
+// Models whose chat template accepts a non-standard effort ladder. Anything not
+// listed here passes through unchanged. qwen3.8-27b returns HTTP 400 on high and
+// max ("Supported types are xhigh (default), medium, and low"), so both map to
+// its own top rung. `off` is never remapped — every model accepts it.
+const EFFORT_ALIAS = {
+  "qwen3.8-27b": { high: "xhigh", max: "xhigh" },
+};
 
 // Preferred model per agent role, best first. The plugin picks the first entry
 // that SAIA currently reports as `ready`; if none are ready it falls back to any
@@ -578,12 +604,18 @@ export const server = async (_input) => {
       const reasoningModels = new Set();
       for (const m of models) {
         if (m.status !== "ready") continue;
-        const reasoning = m.output?.includes("thought");
+        const reasoning = m.output?.includes("thought") || FORCE_REASONING.has(m.id);
         if (reasoning) reasoningModels.add(m.id);
         config.provider["saia-gwdg"].models[m.id] = {
           name: m.name,
           attachment: m.input?.some((t) => ["image", "audio", "video"].includes(t)),
           reasoning,
+          // Required for ANY temperature to reach the wire: opencode gates the
+          // field on `model.capabilities.temperature`, so without this every
+          // agent temperature in opencode.jsonc is silently dropped (verified
+          // on-wire, opencode 211.18.23). SAIA models are all OpenAI-compatible
+          // completions endpoints, so temperature is always supported.
+          temperature: true,
         };
       }
       globalThis.__saiaReasoning = reasoningModels;

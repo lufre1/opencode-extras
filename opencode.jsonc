@@ -16,18 +16,21 @@
   },
   "agent": {
     "plan": {
-      // No temperature: plan's pinned model (deepseek-v4-flash-0731) is NOT one
-      // opencode auto-injects a temperature for, so we leave its provider
-      // default alone (DeepSeek reasoners want it). No steps cap either: long
-      // autonomous runs must not be cut off mid-task — the plugin's budget
-      // pacer is the runaway guard.
+      // No temperature: opencode's own default (`ke.temperature`) returns
+      // nothing for SAIA models, so omitting it leaves the provider default
+      // alone (DeepSeek reasoners want it). Note opencode DOES inject
+      // top_p 0.95 here regardless — topP is not capability-gated. No steps
+      // cap either: long autonomous runs must not be cut off mid-task — the
+      // plugin's budget pacer is the runaway guard.
       "color": "warning"
     },
     // Stub so the plugin's ROLE_MODELS can pin the built-in build agent's
     // model (the plugin skips roles absent from config.agent).
-    // temperature 0.2: build's pinned model (qwen3-coder-next) IS one opencode
-    // auto-injects a temperature for (0.55); 0.2 overrides it to match @coder
-    // for deterministic implementation. No steps cap, same reason as plan.
+    // temperature 0.2: an explicit choice, not an override — opencode injects
+    // no temperature for these models. Matches @coder for deterministic
+    // implementation. Only reaches the wire because the plugin declares
+    // `temperature: true` per model; without that opencode drops the field.
+    // No steps cap, same reason as plan.
     "build": {
       "temperature": 0.2
     },
