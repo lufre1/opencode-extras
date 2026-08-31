@@ -2,7 +2,7 @@
 #
 # setup-saia-opencode.sh — GENERATED FILE, DO NOT EDIT.
 # Regenerate with: ./build-setup.sh  (in the opencode config repo)
-# Source: opencode-config commit 221ce18-dirty, packed 2026-08-28T13:19:10Z
+# Source: opencode-config commit 668b92e-dirty, packed 2026-08-31T12:41:28Z
 #
 # Installs the GWDG SAIA setup for opencode: provider + plugin, and optional
 # agents (solo, auto, coder, coder2, researcher, debugger) with their prompts.
@@ -208,7 +208,7 @@ write_file "opencode.jsonc" <<'__OC_FILE_EOF__'
         // fetch, so they would include the pacer's own queue and cooldown
         // waits and fire spuriously. The headers case is handled in the plugin
         // (SAIA_TIMEOUT_MS), where only real network time is measured.
-        "chunkTimeout": 60000
+        "chunkTimeout": 30000
       }
     }
   },
@@ -412,10 +412,10 @@ const MAX_CONSECUTIVE_5XX = 3;
 // toward it. SAIA_TIMEOUT_MS is the calibration knob.
 // Floor 5s: a sub-second value can only be a leftover test export, and it
 // kills every request. Edit the constant directly for fault-injection tests.
-const TIMEOUT_MS = Math.max(Number(process.env.SAIA_TIMEOUT_MS) || 60_000, 5_000);
+const TIMEOUT_MS = Math.max(Number(process.env.SAIA_TIMEOUT_MS) || 45_000, 5_000);
 // Connection attempts per request (1 = no reconnect). Only connection-level
 // failures are retried here; 5xx and 429 are opencode's job.
-const MAX_CONNECT_TRIES = 2;
+const MAX_CONNECT_TRIES = 3;
 const PACER_LOG = join(homedir(), ".cache/opencode/saia-gwdg-pacer.log");
 const BUDGET_PATH = join(homedir(), ".cache/opencode/saia-gwdg-budget.json");
 const KEYS_PATH = join(homedir(), ".local/share/opencode/saia-gwdg-keys.json");

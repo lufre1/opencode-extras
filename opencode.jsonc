@@ -18,7 +18,7 @@
         // fetch, so they would include the pacer's own queue and cooldown
         // waits and fire spuriously. The headers case is handled in the plugin
         // (SAIA_TIMEOUT_MS), where only real network time is measured.
-        "chunkTimeout": 60000
+        "chunkTimeout": 30000
       }
     }
   },

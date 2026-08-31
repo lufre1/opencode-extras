@@ -45,10 +45,10 @@ const MAX_CONSECUTIVE_5XX = 3;
 // toward it. SAIA_TIMEOUT_MS is the calibration knob.
 // Floor 5s: a sub-second value can only be a leftover test export, and it
 // kills every request. Edit the constant directly for fault-injection tests.
-const TIMEOUT_MS = Math.max(Number(process.env.SAIA_TIMEOUT_MS) || 60_000, 5_000);
+const TIMEOUT_MS = Math.max(Number(process.env.SAIA_TIMEOUT_MS) || 45_000, 5_000);
 // Connection attempts per request (1 = no reconnect). Only connection-level
 // failures are retried here; 5xx and 429 are opencode's job.
-const MAX_CONNECT_TRIES = 2;
+const MAX_CONNECT_TRIES = 3;
 const PACER_LOG = join(homedir(), ".cache/opencode/saia-gwdg-pacer.log");
 const BUDGET_PATH = join(homedir(), ".cache/opencode/saia-gwdg-budget.json");
 const KEYS_PATH = join(homedir(), ".local/share/opencode/saia-gwdg-keys.json");
