@@ -2,7 +2,7 @@
 #
 # setup-saia-opencode.sh — GENERATED FILE, DO NOT EDIT.
 # Regenerate with: ./build-setup.sh  (in the opencode config repo)
-# Source: opencode-config commit 668b92e-dirty, packed 2026-08-31T12:41:28Z
+# Source: opencode-config commit eafade3-dirty, packed 2026-08-31T13:23:55Z
 #
 # Installs the GWDG SAIA setup for opencode: provider + plugin, and optional
 # agents (solo, auto, coder, coder2, researcher, debugger) with their prompts.
@@ -416,6 +416,10 @@ const TIMEOUT_MS = Math.max(Number(process.env.SAIA_TIMEOUT_MS) || 45_000, 5_000
 // Connection attempts per request (1 = no reconnect). Only connection-level
 // failures are retried here; 5xx and 429 are opencode's job.
 const MAX_CONNECT_TRIES = 3;
+// Models that exhibit silent-drop failures (connection accepted, then timeout).
+// A short backoff between retries lets the replica pool recover a healthy node.
+const SILENT_PACED_MODELS = new Set(["deepseek-v4-flash-0731", "qwen3.8-27b"]);
+const RETRY_BACKOFF_MS = 5_000;
 const PACER_LOG = join(homedir(), ".cache/opencode/saia-gwdg-pacer.log");
 const BUDGET_PATH = join(homedir(), ".cache/opencode/saia-gwdg-budget.json");
 const KEYS_PATH = join(homedir(), ".local/share/opencode/saia-gwdg-keys.json");
@@ -768,7 +772,13 @@ function installPacer(keys) {
                 `after=${Date.now() - startedAt}ms timeout=${TIMEOUT_MS}ms retrying=${retrying} ` +
                 `msg=${String(e?.message ?? e).replace(/\s+/g, " ").slice(0, 200)}`
             );
-            if (retrying) continue;
+            if (retrying) {
+              if (SILENT_PACED_MODELS.has(model)) {
+                await sleep(RETRY_BACKOFF_MS);
+                pacerDebugLog(`backoff ${RETRY_BACKOFF_MS}ms before retry ${tryNo + 1} for ${model} (silent-drop pacing)`);
+              }
+              continue;
+            }
             throw e;
           }
           const ttfb = Date.now() - startedAt;
