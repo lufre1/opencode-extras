@@ -56,6 +56,21 @@ const RETRY_BACKOFF_MS = 5_000;
 // Stream idle timeout: if no data arrives within this window after headers, treat as a stall and retry.
 // Reuse TIMEOUT_MS so there's only one knob to tune for all timeouts.
 const STREAM_IDLE_TIMEOUT_MS = TIMEOUT_MS;
+// Silent-paced models (deepseek-v4-flash-0731, qwen3.8-27b) can legitimately
+// emit no token for long stretches of reasoning. A 45s idle window misclassifies
+// a slow-but-alive generation as a dead replica and kills it. Give these models
+// a longer idle window so slow reasoning survives, while a truly dead replica
+// (no data for SLOW_IDLE_TIMEOUT_MS) is still caught.
+const SLOW_IDLE_TIMEOUT_MS = 90_000;
+// A 200 with no kong id / upstream latency is a dead replica that returns no
+// data. Don't wait the full idle timeout on it — retry after a short window.
+const EMPTY_200_TIMEOUT_MS = 10_000;
+// When a mid-stream stall happens after this many characters of assistant
+// content have already been streamed, the partial output is too large to
+// resume cleanly (opencode has already consumed it). Below this threshold we
+// re-issue the request as a continuation; above it we fail loudly instead of
+// silently dropping or duplicating.
+const MAX_RESUME_CHARS = 4_000;
 const PACER_LOG = join(homedir(), ".cache/opencode/saia-gwdg-pacer.log");
 const BUDGET_PATH = join(homedir(), ".cache/opencode/saia-gwdg-budget.json");
 const KEYS_PATH = join(homedir(), ".local/share/opencode/saia-gwdg-keys.json");
@@ -378,12 +393,38 @@ function installPacer(keys) {
       // streaming responses while it can itself re-issue via `attempt`.
       let wrapStreamWithRetry;
 
-      const attempt = async (k) => {
+      // Builds a request init whose body appends a continuation message telling
+      // the model to resume from the partial text already streamed. Returns the
+      // original init when `continuation` is empty (plain retry).
+      const continuationInit = (continuation) => {
+        if (!continuation) return init;
+        let body;
+        try {
+          body = JSON.parse(init?.body);
+        } catch {
+          return init;
+        }
+        if (!Array.isArray(body?.messages)) return init;
+        body.messages = [
+          ...body.messages,
+          {
+            role: "user",
+            content:
+              "[The previous response was interrupted mid-generation. Continue seamlessly " +
+              "from exactly where it stopped. Do NOT repeat anything already written above — " +
+              "pick up from the last complete sentence and finish the response.]\n\n" +
+              continuation,
+          },
+        ];
+        return { ...init, body: JSON.stringify(body) };
+      };
+
+      const attempt = async (k, continuation) => {
         const wait = lastStart + MIN_INTERVAL_MS - Date.now();
         if (wait > 0) await sleep(wait);
         lastStart = Date.now();
         const reasoningModels = globalThis.__saiaReasoning ?? new Set();
-        const effInit = withEffort(input, init, url, reasoningModels);
+        const effInit = withEffort(input, continuationInit(continuation), url, reasoningModels);
         // One reconnect on a connection-level failure. opencode retries 5xx and
         // 429 for us, but the AI SDK classifies an abort as user cancellation,
         // so a timed-out or dropped connection gets exactly one shot and
@@ -460,7 +501,7 @@ function installPacer(keys) {
         let retries = 0;
         const MAX_STREAM_RETRIES = MAX_CONNECT_TRIES;
 
-        const readStream = async (resp) => {
+        const readStream = async (resp, initialEmpty) => {
           const reader = resp.body?.getReader();
           if (!reader) {
             pacerDebugLog(`stream-no-body ${label(k)} id=${reqId}`);
@@ -468,44 +509,101 @@ function installPacer(keys) {
           }
           let idleTimer = null;
           let stalled = false;
+          const decoder = new TextDecoder();
+          let sseBuf = "";
+          let partialText = "";
+          let contentSeen = false;
+          // Silent-paced models get a longer idle window so slow-but-alive
+          // reasoning isn't killed; a known-dead empty-200 (no kong id, no data)
+          // gets a short window so we don't wait the full timeout on a dead node.
+          const idleTimeout = initialEmpty
+            ? EMPTY_200_TIMEOUT_MS
+            : SILENT_PACED_MODELS.has(model)
+              ? SLOW_IDLE_TIMEOUT_MS
+              : STREAM_IDLE_TIMEOUT_MS;
 
           const armIdleTimer = (r) => {
+            if (idleTimer) return; // re-entrancy guard: one stall detector per reader
             idleTimer = setTimeout(() => {
+              idleTimer = null;
               if (!signal?.aborted) {
                 stalled = true;
-                pacerDebugLog(`stream-stall ${label(k)} id=${reqId} retry=${retries} after=${Date.now() - startedAt}ms`);
+                pacerDebugLog(`stream-stall ${label(k)} id=${reqId} retry=${retries} after=${Date.now() - startedAt}ms timeout=${idleTimeout}ms`);
                 r.cancel().catch(() => {});
               }
-            }, STREAM_IDLE_TIMEOUT_MS);
+            }, idleTimeout);
+          };
+
+          // Decode an SSE chunk, extracting the assistant content delta into
+          // `partialText` so a stall can be resumed as a continuation.
+          const ingest = (value) => {
+            sseBuf += decoder.decode(value, { stream: true });
+            let idx;
+            while ((idx = sseBuf.indexOf("\n\n")) !== -1) {
+              const raw = sseBuf.slice(0, idx);
+              sseBuf = sseBuf.slice(idx + 2);
+              for (const line of raw.split("\n")) {
+                if (!line.startsWith("data:")) continue;
+                const data = line.slice(5).trim();
+                if (!data || data === "[DONE]") continue;
+                try {
+                  const evt = JSON.parse(data);
+                  const delta = evt?.choices?.[0]?.delta?.content;
+                  if (typeof delta === "string" && delta) {
+                    contentSeen = true;
+                    partialText += delta;
+                  }
+                } catch {}
+              }
+            }
           };
 
           // Reads `r` with stall detection, piping chunks into `ctrl`. On a
           // stall (or AbortError not from the caller) it re-issues the request
-          // via `attempt` and keeps pumping, up to MAX_STREAM_RETRIES.
+          // via `attempt` and keeps pumping, up to MAX_STREAM_RETRIES. When
+          // partial content was streamed and is small enough, the retry is a
+          // continuation so the new stream appends coherently instead of
+          // duplicating from scratch.
           const pump = async (r, ctrl) => {
+            const retryStream = async () => {
+              // Too much content already streamed to resume cleanly — opencode
+              // has consumed it. Fail loudly rather than duplicate from scratch.
+              if (contentSeen && partialText.length > MAX_RESUME_CHARS) {
+                pacerDebugLog(`stream-truncated ${label(k)} id=${reqId} partial=${partialText.length}chars — cannot resume, failing`);
+                ctrl.error(new Error("stream truncated (too much output lost to resume)"));
+                return;
+              }
+              retries++;
+              const resume = contentSeen && partialText.length > 0;
+              pacerDebugLog(
+                `stream-retry ${label(k)} id=${reqId} retry=${retries}/${MAX_STREAM_RETRIES} ` +
+                  `resume=${resume} partial=${partialText.length}chars`
+              );
+              if (SILENT_PACED_MODELS.has(model)) {
+                await sleep(RETRY_BACKOFF_MS);
+                pacerDebugLog(`backoff ${RETRY_BACKOFF_MS}ms before stream retry ${retries} for ${model}`);
+              }
+              const newResp = await attempt(k, resume ? partialText : "");
+              if (newResp.status !== 200) {
+                pacerDebugLog(`stream-retry-fail ${label(k)} id=${reqId} status=${newResp.status}`);
+                throw new Error(`Stream retry failed with status ${newResp.status}`);
+              }
+              const newReader = newResp.body?.getReader();
+              if (!newReader) throw new Error("Stream retry had no body");
+              stalled = false;
+              await pump(newReader, ctrl);
+            };
+
             armIdleTimer(r);
             try {
               while (true) {
                 const { done, value } = await r.read();
                 clearTimeout(idleTimer);
+                idleTimer = null;
                 if (done) {
                   if (stalled) {
                     if (!signal?.aborted && retries < MAX_STREAM_RETRIES) {
-                      retries++;
-                      pacerDebugLog(`stream-retry ${label(k)} id=${reqId} retry=${retries}/${MAX_STREAM_RETRIES}`);
-                      if (SILENT_PACED_MODELS.has(model)) {
-                        await sleep(RETRY_BACKOFF_MS);
-                        pacerDebugLog(`backoff ${RETRY_BACKOFF_MS}ms before stream retry ${retries} for ${model}`);
-                      }
-                      const newResp = await attempt(k);
-                      if (newResp.status !== 200) {
-                        pacerDebugLog(`stream-retry-fail ${label(k)} id=${reqId} status=${newResp.status}`);
-                        throw new Error(`Stream retry failed with status ${newResp.status}`);
-                      }
-                      const newReader = newResp.body?.getReader();
-                      if (!newReader) throw new Error("Stream retry had no body");
-                      stalled = false;
-                      await pump(newReader, ctrl);
+                      await retryStream();
                       return;
                     }
                     if (!signal?.aborted) {
@@ -518,27 +616,15 @@ function installPacer(keys) {
                   pacerDebugLog(`stream-done ${label(k)} id=${reqId} total=${Date.now() - startedAt}ms`);
                   return;
                 }
+                ingest(value);
                 ctrl.enqueue(value);
                 if (!signal?.aborted) armIdleTimer(r);
               }
             } catch (e) {
               clearTimeout(idleTimer);
+              idleTimer = null;
               if (e.name === "AbortError" && !signal?.aborted && retries < MAX_STREAM_RETRIES) {
-                retries++;
-                pacerDebugLog(`stream-retry ${label(k)} id=${reqId} retry=${retries}/${MAX_STREAM_RETRIES}`);
-                if (SILENT_PACED_MODELS.has(model)) {
-                  await sleep(RETRY_BACKOFF_MS);
-                  pacerDebugLog(`backoff ${RETRY_BACKOFF_MS}ms before stream retry ${retries} for ${model}`);
-                }
-                const newResp = await attempt(k);
-                if (newResp.status !== 200) {
-                  pacerDebugLog(`stream-retry-fail ${label(k)} id=${reqId} status=${newResp.status}`);
-                  throw new Error(`Stream retry failed with status ${newResp.status}`);
-                }
-                const newReader = newResp.body?.getReader();
-                if (!newReader) throw new Error("Stream retry had no body");
-                stalled = false;
-                await pump(newReader, ctrl);
+                await retryStream();
                 return;
               }
               if (!signal?.aborted) {
@@ -562,7 +648,14 @@ function installPacer(keys) {
         };
 
         const finalResp = initialResp ?? (await attempt(k));
-        const bodyStream = await readStream(finalResp);
+        // A 200 with no kong id and no upstream latency is a dead replica that
+        // accepted the connection but returns no data — retry it fast instead of
+        // waiting the full idle timeout on a node that will never respond.
+        const initialEmpty =
+          finalResp.status === 200 &&
+          finalResp.headers.get("x-kong-request-id") === null &&
+          finalResp.headers.get("x-kong-upstream-latency") === null;
+        const bodyStream = await readStream(finalResp, initialEmpty);
         return new Response(bodyStream, {
           status: finalResp.status,
           statusText: finalResp.statusText,
