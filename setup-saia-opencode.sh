@@ -2,7 +2,7 @@
 #
 # setup-saia-opencode.sh — GENERATED FILE, DO NOT EDIT.
 # Regenerate with: ./build-setup.sh  (in the opencode config repo)
-# Source: opencode-config commit eafade3-dirty, packed 2026-08-31T13:23:55Z
+# Source: opencode-config commit f994c9a-dirty, packed 2026-09-08T15:51:59Z
 #
 # Installs the GWDG SAIA setup for opencode: provider + plugin, and optional
 # agents (solo, auto, coder, coder2, researcher, debugger) with their prompts.
@@ -420,6 +420,9 @@ const MAX_CONNECT_TRIES = 3;
 // A short backoff between retries lets the replica pool recover a healthy node.
 const SILENT_PACED_MODELS = new Set(["deepseek-v4-flash-0731", "qwen3.8-27b"]);
 const RETRY_BACKOFF_MS = 5_000;
+// Stream idle timeout: if no data arrives within this window after headers, treat as a stall and retry.
+// Reuse TIMEOUT_MS so there's only one knob to tune for all timeouts.
+const STREAM_IDLE_TIMEOUT_MS = TIMEOUT_MS;
 const PACER_LOG = join(homedir(), ".cache/opencode/saia-gwdg-pacer.log");
 const BUDGET_PATH = join(homedir(), ".cache/opencode/saia-gwdg-budget.json");
 const KEYS_PATH = join(homedir(), ".local/share/opencode/saia-gwdg-keys.json");
@@ -738,6 +741,10 @@ function installPacer(keys) {
       let key = pickKey();
       if (key === null) throw allExhaustedError();
 
+      // Declared here (assigned after `attempt`) so `attempt` can call it for
+      // streaming responses while it can itself re-issue via `attempt`.
+      let wrapStreamWithRetry;
+
       const attempt = async (k) => {
         const wait = lastStart + MIN_INTERVAL_MS - Date.now();
         if (wait > 0) await sleep(wait);
@@ -804,8 +811,130 @@ function installPacer(keys) {
                 `retry-after=${resp.headers.get("retry-after")} body=${body}`
             );
           }
+          // Streaming responses are wrapped at the single final return point
+          // (after 429 handling) so the body is wrapped exactly once.
           return resp;
         }
+      };
+
+      // Wraps a streaming Response body so a mid-stream stall (headers arrived,
+      // then no data for STREAM_IDLE_TIMEOUT_MS) is caught and retried by
+      // re-issuing the request, instead of aborting opencode's step with a hard
+      // "operation timed out". The caller's own abort is never retried.
+      wrapStreamWithRetry = async (input, init, url, k, reqId, model, initialResp) => {
+        const signal = init?.signal;
+        const startedAt = Date.now();
+        let retries = 0;
+        const MAX_STREAM_RETRIES = MAX_CONNECT_TRIES;
+
+        const readStream = async (resp) => {
+          const reader = resp.body?.getReader();
+          if (!reader) {
+            pacerDebugLog(`stream-no-body ${label(k)} id=${reqId}`);
+            return resp.body;
+          }
+          let idleTimer = null;
+          let stalled = false;
+
+          const armIdleTimer = (r) => {
+            idleTimer = setTimeout(() => {
+              if (!signal?.aborted) {
+                stalled = true;
+                pacerDebugLog(`stream-stall ${label(k)} id=${reqId} retry=${retries} after=${Date.now() - startedAt}ms`);
+                r.cancel().catch(() => {});
+              }
+            }, STREAM_IDLE_TIMEOUT_MS);
+          };
+
+          // Reads `r` with stall detection, piping chunks into `ctrl`. On a
+          // stall (or AbortError not from the caller) it re-issues the request
+          // via `attempt` and keeps pumping, up to MAX_STREAM_RETRIES.
+          const pump = async (r, ctrl) => {
+            armIdleTimer(r);
+            try {
+              while (true) {
+                const { done, value } = await r.read();
+                clearTimeout(idleTimer);
+                if (done) {
+                  if (stalled) {
+                    if (!signal?.aborted && retries < MAX_STREAM_RETRIES) {
+                      retries++;
+                      pacerDebugLog(`stream-retry ${label(k)} id=${reqId} retry=${retries}/${MAX_STREAM_RETRIES}`);
+                      if (SILENT_PACED_MODELS.has(model)) {
+                        await sleep(RETRY_BACKOFF_MS);
+                        pacerDebugLog(`backoff ${RETRY_BACKOFF_MS}ms before stream retry ${retries} for ${model}`);
+                      }
+                      const newResp = await attempt(k);
+                      if (newResp.status !== 200) {
+                        pacerDebugLog(`stream-retry-fail ${label(k)} id=${reqId} status=${newResp.status}`);
+                        throw new Error(`Stream retry failed with status ${newResp.status}`);
+                      }
+                      const newReader = newResp.body?.getReader();
+                      if (!newReader) throw new Error("Stream retry had no body");
+                      stalled = false;
+                      await pump(newReader, ctrl);
+                      return;
+                    }
+                    if (!signal?.aborted) {
+                      pacerDebugLog(`stream-fail ${label(k)} id=${reqId} after=${Date.now() - startedAt}ms msg=stream stalled`);
+                    }
+                    ctrl.error(new Error("stream stalled"));
+                    return;
+                  }
+                  ctrl.close();
+                  pacerDebugLog(`stream-done ${label(k)} id=${reqId} total=${Date.now() - startedAt}ms`);
+                  return;
+                }
+                ctrl.enqueue(value);
+                if (!signal?.aborted) armIdleTimer(r);
+              }
+            } catch (e) {
+              clearTimeout(idleTimer);
+              if (e.name === "AbortError" && !signal?.aborted && retries < MAX_STREAM_RETRIES) {
+                retries++;
+                pacerDebugLog(`stream-retry ${label(k)} id=${reqId} retry=${retries}/${MAX_STREAM_RETRIES}`);
+                if (SILENT_PACED_MODELS.has(model)) {
+                  await sleep(RETRY_BACKOFF_MS);
+                  pacerDebugLog(`backoff ${RETRY_BACKOFF_MS}ms before stream retry ${retries} for ${model}`);
+                }
+                const newResp = await attempt(k);
+                if (newResp.status !== 200) {
+                  pacerDebugLog(`stream-retry-fail ${label(k)} id=${reqId} status=${newResp.status}`);
+                  throw new Error(`Stream retry failed with status ${newResp.status}`);
+                }
+                const newReader = newResp.body?.getReader();
+                if (!newReader) throw new Error("Stream retry had no body");
+                stalled = false;
+                await pump(newReader, ctrl);
+                return;
+              }
+              if (!signal?.aborted) {
+                pacerDebugLog(`stream-fail ${label(k)} id=${reqId} after=${Date.now() - startedAt}ms msg=${String(e).slice(0, 200)}`);
+              }
+              ctrl.error(e);
+            }
+          };
+
+          const stream = new ReadableStream({
+            async start(ctrl) {
+              await pump(reader, ctrl);
+            },
+            cancel() {
+              clearTimeout(idleTimer);
+              reader.cancel();
+            },
+          });
+
+          return stream;
+        };
+
+        const finalResp = initialResp ?? (await attempt(k));
+        const bodyStream = await readStream(finalResp);
+        return new Response(bodyStream, {
+          status: finalResp.status,
+          statusText: finalResp.statusText,
+          headers: finalResp.headers,
+        });
       };
 
       let resp = await attempt(key);
@@ -830,6 +959,12 @@ function installPacer(keys) {
             );
           }
         }
+      }
+      // For streaming responses, wrap the body to handle mid-stream stalls.
+      const isStreaming = resp.headers.get("content-type")?.includes("text/event-stream");
+      if (resp.status === 200 && isStreaming) {
+        pacerDebugLog(`stream-wrap-final ${label(key)} id=${reqId} model=${model}`);
+        return await wrapStreamWithRetry(input, init, url, key, reqId, model, resp);
       }
       return resp;
     });
