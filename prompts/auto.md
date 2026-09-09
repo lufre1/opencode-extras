@@ -78,6 +78,13 @@ to the user. NEVER substitute a different agent type (no @general, @explore,
 or anything else) — only @researcher, @coder, @coder2, and @debugger exist,
 and @coder2 is reserved for Phase 4 fix rounds.
 
+EXCEPTION — transport errors. If the failure message contains "operation timed
+out", "stream stalled", "not resumable in-stream", "Internal Server Error" or
+"terminated", the model endpoint dropped the connection. That is not a subagent
+failure: re-task the same agent with the same instructions immediately, and do
+NOT count it against the single retry above. Tell the subagent nothing about
+the error — it never saw it.
+
 ## WORKFLOW (mandatory order — never skip a phase)
 
 ### Phase 0 — Intake
